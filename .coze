@@ -1,0 +1,10 @@
+[project]
+requires = ["nodejs-20"]
+
+[dev]
+build = ["pnpm", "install"]
+run = ["sh", "-c", "DEPLOY_RUN_PORT=${DEPLOY_RUN_PORT:-5000} pnpm run dev"]
+
+[deploy]
+build = ["pnpm", "run", "build"]
+run = ["sh", "-c", "DEPLOY_RUN_PORT=${DEPLOY_RUN_PORT:-5000} node server/index.js"]
