@@ -14,9 +14,12 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const app = express();
-const PORT = parseInt(process.env.DEPLOY_RUN_PORT || '5000') + 1;
-// 生产环境后端与前端同端口，前端静态由 express 提供
 const IS_PROD = process.env.COZE_PROJECT_ENV === 'PROD' || process.env.NODE_ENV === 'production';
+// 生产环境：后端直接监听 DEPLOY_RUN_PORT，同时提供前端静态文件
+// 开发环境：后端监听 DEPLOY_RUN_PORT+1，Vite 前端代理 API
+const PORT = IS_PROD
+  ? parseInt(process.env.DEPLOY_RUN_PORT || '5000')
+  : parseInt(process.env.DEPLOY_RUN_PORT || '5000') + 1;
 
 // 中间件
 app.use(cors());

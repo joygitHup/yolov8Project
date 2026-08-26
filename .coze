@@ -10,4 +10,4 @@ build = [
   "pnpm install",
   "pnpm run build"
 ]
-run = ["sh", "-c", "DEPLOY_RUN_PORT=${DEPLOY_RUN_PORT:-5000} node server/index.js"]
+run = ["sh", "-c", "COZE_PROJECT_ENV=PROD NODE_ENV=production DEPLOY_RUN_PORT=${DEPLOY_RUN_PORT:-5000} node server/index.js"]
