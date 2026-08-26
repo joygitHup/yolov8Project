@@ -1,5 +1,5 @@
 [project]
-requires = ["nodejs-20"]
+requires = ["nodejs-24"]
 
 [dev]
 build = ["pnpm", "install"]
