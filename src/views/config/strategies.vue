@@ -248,8 +248,9 @@ function handleEdit(row: any) {
 
 async function handleToggle(row: any) {
   try {
-    await configApi.toggleStrategy(row.id)
-    ElMessage.success(row.enabled ? '已启用' : '已禁用')
+    const res: any = await configApi.toggleStrategy(row.id, { enabled: row.enabled })
+    row.enabled = !!res.enabled
+    ElMessage.success(row.enabled ? '策略已启用并立即生效' : '策略已禁用并立即生效')
   } catch (e) {
     row.enabled = !row.enabled
   }

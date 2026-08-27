@@ -7,10 +7,12 @@ interface UserInfo {
   id: number
   username: string
   name: string
+  realName?: string
   role: 'admin' | 'operator' | 'viewer'
   email: string
   phone: string
   status: string
+  enabled?: boolean
   createdAt: string
   updatedAt: string
 }
@@ -28,7 +30,10 @@ export const useUserStore = defineStore('user', () => {
     const res: any = await authApi.login({ username, password })
     if (res.token) {
       token.value = res.token
-      userInfo.value = res.user
+      userInfo.value = {
+        ...res.user,
+        name: res.user?.name || res.user?.realName
+      }
       localStorage.setItem('token', res.token)
     }
     return res
@@ -37,8 +42,11 @@ export const useUserStore = defineStore('user', () => {
   async function fetchUserInfo() {
     try {
       const res: any = await authApi.getCurrentUser()
-      userInfo.value = res
-      return res
+      userInfo.value = {
+        ...res,
+        name: res.name || res.realName
+      }
+      return userInfo.value
     } catch {
       logout()
       throw new Error('获取用户信息失败')

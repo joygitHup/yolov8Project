@@ -10,7 +10,7 @@
         <div class="logo">
           <el-icon class="logo-icon"><VideoCamera /></el-icon>
         </div>
-        <h1 class="title">YOLOv8 视频智能分析系统</h1>
+        <h1 class="title">{{ appStore.systemTitle }}</h1>
         <p class="subtitle">AI 驱动的智能安防视频识别平台</p>
       </div>
 
@@ -68,15 +68,17 @@
 </template>
 
 <script setup lang="ts">
-import { ref, reactive } from 'vue'
+import { ref, reactive, onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useUserStore } from '@/stores/user'
+import { useAppStore } from '@/stores/app'
 import { ElMessage, type FormInstance, type FormRules } from 'element-plus'
 import { User, Lock, VideoCamera } from '@element-plus/icons-vue'
 
 const route = useRoute()
 const router = useRouter()
 const userStore = useUserStore()
+const appStore = useAppStore()
 
 const loginFormRef = ref<FormInstance>()
 const loading = ref(false)
@@ -114,6 +116,10 @@ async function handleLogin() {
     loading.value = false
   }
 }
+
+onMounted(() => {
+  appStore.loadPublicSettings()
+})
 </script>
 
 <style scoped>

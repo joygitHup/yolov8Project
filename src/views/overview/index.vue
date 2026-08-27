@@ -330,7 +330,7 @@ function updateRankChart(data: any[]) {
 
 async function loadTrendData() {
   try {
-    const res: any = await dashboardApi.getAlertTrend()
+    const res: any = await dashboardApi.getAlertTrend({ period: trendPeriod.value })
     updateTrendChart(res)
   } catch (e) {}
 }

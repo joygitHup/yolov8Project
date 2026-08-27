@@ -1,6 +1,7 @@
 // 路由配置
 import { createRouter, createWebHistory, type RouteRecordRaw } from 'vue-router'
 import { useUserStore } from '@/stores/user'
+import { useAppStore } from '@/stores/app'
 
 const routes: RouteRecordRaw[] = [
   {
@@ -72,7 +73,7 @@ const routes: RouteRecordRaw[] = [
         path: 'config/strategies',
         name: 'StrategyConfig',
         component: () => import('@/views/config/strategies.vue'),
-        meta: { title: '布防策略', icon: 'Shield', requiresAuth: true, roles: ['admin', 'operator'], hidden: true }
+        meta: { title: '布防策略', icon: 'Lock', requiresAuth: true, roles: ['admin', 'operator'], hidden: true }
       },
       {
         path: 'config/notification',
@@ -104,10 +105,10 @@ const router = createRouter({
 // 路由守卫
 router.beforeEach(async (to, from, next) => {
   const userStore = useUserStore()
+  const appStore = useAppStore()
   const title = to.meta.title as string
-  if (title) {
-    document.title = `${title} - YOLOv8 视频智能分析系统`
-  }
+  const suffix = appStore.systemTitle || 'YOLOv8 视频智能分析系统'
+  document.title = title ? `${title} - ${suffix}` : suffix
 
   // 不需要登录的页面
   if (to.meta.requiresAuth === false) {
@@ -138,7 +139,7 @@ router.beforeEach(async (to, from, next) => {
   // 权限校验
   const roles = to.meta.roles as string[] | undefined
   if (roles && userStore.userInfo && !roles.includes(userStore.userInfo.role)) {
-    next('/403')
+    next('/overview')
     return
   }
 

@@ -4,7 +4,7 @@
     <aside class="sidebar">
       <div class="logo">
         <el-icon class="logo-icon"><VideoCamera /></el-icon>
-        <span v-if="!appStore.sidebarCollapsed" class="logo-text">YOLOv8 智能分析</span>
+        <span v-if="!appStore.sidebarCollapsed" class="logo-text">{{ appStore.systemTitle }}</span>
       </div>
       <el-menu
         :default-active="activeMenu"
@@ -91,12 +91,13 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref, onMounted } from 'vue'
+import { computed, ref, onMounted, onUnmounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useUserStore } from '@/stores/user'
 import { useAppStore } from '@/stores/app'
 import { alertApi } from '@/api'
-import { ElMessageBox, ElMessage } from 'element-plus'
+import { connectRealtime, disconnectRealtime, onRealtime } from '@/utils/realtime'
+import { ElMessageBox, ElMessage, ElNotification } from 'element-plus'
 
 const route = useRoute()
 const router = useRouter()
@@ -104,6 +105,7 @@ const userStore = useUserStore()
 const appStore = useAppStore()
 
 const unhandledCount = ref(0)
+const realtimeOffs: Array<() => void> = []
 
 // 菜单项
 const menuItems = computed(() => {
@@ -150,6 +152,7 @@ function handleCommand(command: string) {
       cancelButtonText: '取消',
       type: 'warning'
     }).then(() => {
+      disconnectRealtime()
       userStore.logout()
       ElMessage.success('已退出登录')
       router.push('/login')
@@ -168,8 +171,30 @@ async function fetchUnhandledCount() {
 
 onMounted(() => {
   fetchUnhandledCount()
-  // 定时刷新未处理告警数量
-  setInterval(fetchUnhandledCount, 30000)
+  appStore.loadSettings()
+  connectRealtime()
+  realtimeOffs.push(
+    onRealtime('alert:created', (alert) => {
+      unhandledCount.value += 1
+      ElNotification({
+        title: alert?.level === 'high' ? '高危告警' : '新告警',
+        message: `${alert?.cameraName || ''} ${alert?.description || ''}`,
+        type: alert?.level === 'high' ? 'error' : 'warning',
+        duration: 4500
+      })
+    }),
+    onRealtime('alert:updated', () => {
+      fetchUnhandledCount()
+    }),
+    onRealtime('config:updated', (payload) => {
+      appStore.applySystemTitle(payload?.settings?.system?.title, payload?.settings?.system?.version)
+    })
+  )
+})
+
+onUnmounted(() => {
+  realtimeOffs.forEach((fn) => fn())
+  disconnectRealtime()
 })
 </script>
 
@@ -213,8 +238,10 @@ onMounted(() => {
 }
 
 .logo-text {
-  font-size: 16px;
+  font-size: 14px;
   font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .sidebar-menu {

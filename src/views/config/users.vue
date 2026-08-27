@@ -240,8 +240,9 @@ function handleEdit(row: any) {
 
 async function handleToggleStatus(row: any) {
   try {
-    await authApi.updateUser(row.id, { enabled: !row.enabled })
-    ElMessage.success(row.enabled ? '已启用' : '已禁用')
+    const res: any = await authApi.toggleStatus(row.id, { enabled: row.enabled })
+    row.enabled = !!res.enabled
+    ElMessage.success(row.enabled ? '用户已启用' : '用户已禁用')
   } catch (e) {
     row.enabled = !row.enabled
   }

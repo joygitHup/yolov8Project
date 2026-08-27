@@ -144,10 +144,13 @@ async function loadData() {
   try {
     const res: any = await configApi.getDetection()
     if (res) {
-      form.confidenceThreshold = res.confidenceThreshold || 0.5
-      form.iouThreshold = res.iouThreshold || 0.45
-      form.fps = res.fps || 2
-      form.maxDetections = res.maxDetections || 100
+      form.confidenceThreshold = res.confidenceThreshold ?? 0.5
+      form.iouThreshold = res.iouThreshold ?? 0.45
+      form.fps = res.fps ?? 2
+      form.maxDetections = res.maxDetections ?? 100
+      form.categories = Array.isArray(res.categories) ? [...res.categories] : form.categories
+      form.trackingEnabled = res.trackingEnabled !== false
+      form.trackLostFrames = res.trackLostFrames ?? 30
     }
   } finally {
     loading.value = false
@@ -157,13 +160,27 @@ async function loadData() {
 async function handleSave() {
   saveLoading.value = true
   try {
-    await configApi.updateDetection({
+    const res: any = await configApi.updateDetection({
       confidenceThreshold: form.confidenceThreshold,
       iouThreshold: form.iouThreshold,
       fps: form.fps,
-      maxDetections: form.maxDetections
+      maxDetections: form.maxDetections,
+      categories: form.categories,
+      trackingEnabled: form.trackingEnabled,
+      trackLostFrames: form.trackLostFrames
     })
-    ElMessage.success('检测参数已更新')
+    if (res?.detection) {
+      Object.assign(form, {
+        confidenceThreshold: res.detection.confidenceThreshold,
+        iouThreshold: res.detection.iouThreshold,
+        fps: res.detection.fps,
+        maxDetections: res.detection.maxDetections,
+        categories: [...(res.detection.categories || [])],
+        trackingEnabled: res.detection.trackingEnabled !== false,
+        trackLostFrames: res.detection.trackLostFrames
+      })
+    }
+    ElMessage.success(res?.message || '检测参数已更新并立即生效')
   } catch (e) {
     // 错误已处理
   } finally {

@@ -5,7 +5,7 @@
       <div class="header-left">
         <h1 class="main-title">
           <el-icon class="title-icon"><DataBoard /></el-icon>
-          YOLOv8 智能视频分析数据大屏
+          {{ appStore.systemTitle }}
         </h1>
         <div class="time-display">
           <el-icon><Clock /></el-icon>
@@ -165,7 +165,7 @@
         <div class="panel">
           <div class="panel-header">
             <span class="panel-title">实时告警</span>
-            <span class="refresh-hint">每5秒刷新</span>
+            <span class="refresh-hint">实时推送</span>
           </div>
           <div class="panel-body alert-list">
             <div
@@ -231,6 +231,7 @@
 import { ref, onMounted, onUnmounted, nextTick, reactive } from 'vue'
 import * as echarts from 'echarts'
 import { dashboardApi, cameraApi } from '@/api'
+import { onRealtime } from '@/utils/realtime'
 import { useAppStore } from '@/stores/app'
 import { ElMessage } from 'element-plus'
 import {
@@ -260,6 +261,7 @@ const camMockDetections = reactive<Record<number, any[]>>({})
 let timeTimer: any = null
 let dataTimer: any = null
 let detectionTimer: any = null
+const realtimeOffs: Array<() => void> = []
 
 function updateTime() {
   currentTime.value = dayjs().format('YYYY年MM月DD日 HH:mm:ss')
@@ -285,28 +287,35 @@ async function fetchCameras() {
   try {
     const res: any = await cameraApi.getAll()
     displayCameras.value = (res || []).slice(0, 4)
-    // 初始化模拟检测框
-    displayCameras.value.forEach(cam => {
-      generateMockDetections(cam.id)
-    })
+    await fetchRealtimeDetections()
   } catch (e) {}
 }
 
-function generateMockDetections(camId: number) {
-  const types = ['person', 'car', 'truck', 'fire', 'smoke']
-  const count = Math.floor(Math.random() * 4)
-  const boxes = []
-  for (let i = 0; i < count; i++) {
-    boxes.push({
-      label: types[Math.floor(Math.random() * types.length)],
-      confidence: (0.7 + Math.random() * 0.25).toFixed(2),
-      x: Math.random() * 60 + 10,
-      y: Math.random() * 50 + 15,
-      w: Math.random() * 15 + 8,
-      h: Math.random() * 20 + 10
-    })
-  }
-  camMockDetections[camId] = boxes
+function applyDetectionFrame(frame: any) {
+  if (!frame?.cameraId) return
+  camMockDetections[frame.cameraId] = (frame.detections || []).map((d: any) => {
+    const bbox = d.bbox || d
+    const nx = Number(bbox.x || 0)
+    const ny = Number(bbox.y || 0)
+    const nw = Number(bbox.w || 0)
+    const nh = Number(bbox.h || 0)
+    const scale = nx > 1 || ny > 1 ? 1 : 100
+    return {
+      label: d.label,
+      confidence: d.confidence,
+      x: nx * scale,
+      y: ny * scale,
+      w: nw * scale,
+      h: nh * scale
+    }
+  })
+}
+
+async function fetchRealtimeDetections() {
+  try {
+    const res: any = await dashboardApi.getRealtimeDetections()
+    ;(res || []).forEach((item: any) => applyDetectionFrame(item))
+  } catch (e) {}
 }
 
 async function fetchRecentAlerts() {
@@ -504,6 +513,7 @@ async function refreshData() {
   await Promise.all([
     fetchOverview(),
     fetchRecentAlerts(),
+    fetchRealtimeDetections(),
     loadChartsData()
   ])
   loading.value = false
@@ -529,26 +539,31 @@ onMounted(async () => {
 
   // 定时刷新数据
   dataTimer = setInterval(async () => {
-    await fetchOverview()
-    await fetchRecentAlerts()
-  }, 5000)
+    await Promise.all([
+      fetchOverview(),
+      fetchRecentAlerts(),
+      fetchRealtimeDetections(),
+      loadChartsData()
+    ])
+  }, 8000)
 
-  // 定时更新检测框
-  detectionTimer = setInterval(() => {
-    displayCameras.value.forEach(cam => {
-      if (cam.status === 'online') {
-        generateMockDetections(cam.id)
-      }
-    })
-  }, 3000)
+  const offFrame = onRealtime('detection:frame', (frame) => {
+    applyDetectionFrame(frame)
+  })
+  const offAlert = onRealtime('alert:created', (alert) => {
+    if (!alert) return
+    recentAlerts.value = [alert, ...recentAlerts.value].slice(0, 10)
+  })
 
   window.addEventListener('resize', handleResize)
+  realtimeOffs.push(offFrame, offAlert)
 })
 
 onUnmounted(() => {
   clearInterval(timeTimer)
   clearInterval(dataTimer)
   clearInterval(detectionTimer)
+  realtimeOffs.forEach((fn) => fn())
   trendChart?.dispose()
   typeChart?.dispose()
   rankChart?.dispose()

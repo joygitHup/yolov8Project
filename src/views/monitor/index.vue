@@ -16,7 +16,7 @@
           v-for="cam in filteredCameras"
           :key="cam.id"
           class="camera-item"
-          :class="{ active: selectedCamera?.id === cam.id, offline: cam.status === 'offline' }"
+          :class="{ active: selectedCamera?.id === cam.id, offline: !isLive(cam) }"
           @click="selectCamera(cam)"
         >
           <div class="cam-icon">
@@ -24,9 +24,9 @@
           </div>
           <div class="cam-info">
             <div class="cam-name">{{ cam.name }}</div>
-            <div class="cam-location">{{ cam.location }}</div>
+            <div class="cam-location">{{ cam.location || cam.ip || '未标注位置' }}</div>
           </div>
-          <div class="cam-status" :class="cam.status">
+          <div class="cam-status" :class="cameraState(cam)">
             <span class="status-dot"></span>
           </div>
         </div>
@@ -56,7 +56,7 @@
           <el-tooltip content="截图">
             <el-icon class="tool-icon" @click="handleScreenshot"><Camera /></el-icon>
           </el-tooltip>
-          <el-tooltip content="录制">
+          <el-tooltip :content="isRecording ? '停止录制' : '开始录制'">
             <el-icon class="tool-icon" @click="handleRecord" :class="{ recording: isRecording }">
               <VideoCameraFilled />
             </el-icon>
@@ -66,45 +66,43 @@
 
       <div class="video-grid" :class="`grid-${layoutMode}`" ref="gridRef">
         <div
-          v-for="n in parseInt(layoutMode)"
-          :key="n"
+          v-for="(cam, idx) in gridSlots"
+          :key="cam?.id || `empty-${idx}`"
           class="video-panel"
-          :class="{ active: selectedCamera?.id === getCameraForGrid(n)?.id }"
-          @click="selectGridCamera(n)"
+          :class="{ active: selectedCamera?.id === cam?.id }"
+          @click="selectGridCamera(idx)"
         >
-          <div v-if="getCameraForGrid(n)" class="video-container">
+          <div v-if="cam" class="video-container">
             <div class="video-content">
-              <div v-if="getCameraForGrid(n)?.status === 'offline'" class="video-offline">
+              <div v-if="!isLive(cam)" class="video-offline">
                 <el-icon :size="48"><VideoPause /></el-icon>
-                <p>设备离线</p>
+                <p>{{ !cam.enabled ? '设备已停用' : '设备离线' }}</p>
+                <span class="offline-meta">{{ cam.ip }} {{ cam.resolution }}</span>
               </div>
               <template v-else>
-                <div class="mock-video"></div>
+                <div class="camera-scene" :style="sceneStyle(cam)"></div>
                 <div class="video-overlay">
-                  <!-- 检测框 -->
                   <div
-                    v-for="(box, idx) in detectionData[getCameraForGrid(n)?.id || 0] || []"
-                    :key="idx"
+                    v-for="(box, boxIdx) in detectionData[cam.id] || []"
+                    :key="box.id || boxIdx"
                     class="detect-box"
                     :class="box.label"
-                    :style="{
-                      left: box.bbox.x * 100 + '%',
-                      top: box.bbox.y * 100 + '%',
-                      width: box.bbox.w * 100 + '%',
-                      height: box.bbox.h * 100 + '%'
-                    }"
+                    :style="boxStyle(box)"
                   >
-                    <span class="box-label">{{ translateLabel(box.label) }} {{ box.confidence }}</span>
+                    <span class="box-label">{{ translateLabel(box.label) }} {{ formatConfidence(box.confidence) }}</span>
                   </div>
                 </div>
                 <div class="video-info">
-                  <span class="video-title">{{ getCameraForGrid(n)?.name }}</span>
-                  <span class="live-badge">
-                    <span class="live-dot"></span> LIVE
+                  <span class="video-title">{{ cam.name }}</span>
+                  <span class="live-badge" :class="{ recording: cam.recording }">
+                    <span class="live-dot"></span> {{ cam.recording ? 'REC' : 'LIVE' }}
                   </span>
                 </div>
+                <div class="video-meta">
+                  {{ cam.ip || '无IP' }} · {{ cam.resolution }} · {{ typeText(cam.type) }}
+                </div>
                 <div class="video-timestamp">
-                  {{ currentTime }}
+                  {{ detectionData[cam.id]?.length || 0 }} 目标 · {{ cam.fps || 0 }} FPS · {{ currentTime }}
                 </div>
               </template>
             </div>
@@ -116,7 +114,7 @@
       </div>
 
       <!-- PTZ 控制 -->
-      <div v-if="selectedCamera && selectedCamera.status === 'online'" class="ptz-panel">
+      <div v-if="selectedCamera && isLive(selectedCamera)" class="ptz-panel">
         <div class="ptz-title">云台控制</div>
         <div class="ptz-pad">
           <div class="ptz-row">
@@ -148,6 +146,11 @@
         <div class="ptz-zoom">
           <el-button size="small" @click="handlePtz('zoomin')">+ 放大</el-button>
           <el-button size="small" @click="handlePtz('zoomout')">- 缩小</el-button>
+        </div>
+        <div class="ptz-readout">
+          <span>P {{ formatPtz(selectedCamera?.ptz?.pan) }}</span>
+          <span>T {{ formatPtz(selectedCamera?.ptz?.tilt) }}</span>
+          <span>Z {{ formatPtz(selectedCamera?.ptz?.zoom) }}</span>
         </div>
       </div>
     </div>
@@ -189,6 +192,7 @@
 import { ref, computed, onMounted, onUnmounted, reactive } from 'vue'
 import { useRouter } from 'vue-router'
 import { cameraApi, alertApi } from '@/api'
+import { onRealtime } from '@/utils/realtime'
 import { ElMessage } from 'element-plus'
 import {
   Search, VideoCamera, FullScreen, Camera, VideoCameraFilled,
@@ -204,44 +208,93 @@ const selectedCamera = ref<any>(null)
 const cameras = ref<any[]>([])
 const realtimeAlerts = ref<any[]>([])
 const unhandledCount = ref(0)
-const isRecording = ref(false)
 const currentTime = ref('')
 const gridRef = ref<HTMLElement>()
 const detectionData = reactive<Record<number, any[]>>({})
 
 let timeTimer: any = null
-let detectionTimer: any = null
-let alertTimer: any = null
+let wallTimer: any = null
+const realtimeOffs: Array<() => void> = []
+
+const isRecording = computed(() => !!selectedCamera.value?.recording)
 
 const filteredCameras = computed(() => {
   if (!searchKeyword.value) return cameras.value
   const kw = searchKeyword.value.toLowerCase()
   return cameras.value.filter(c =>
-    c.name.toLowerCase().includes(kw) ||
-    c.location.toLowerCase().includes(kw) ||
-    c.ip.includes(kw)
+    String(c.name || '').toLowerCase().includes(kw) ||
+    String(c.location || '').toLowerCase().includes(kw) ||
+    String(c.ip || '').toLowerCase().includes(kw)
   )
 })
+
+const gridSlots = computed(() => {
+  const count = parseInt(layoutMode.value, 10) || 4
+  const list = cameras.value
+  if (!list.length) return Array.from({ length: count }, () => null)
+  if (count === 1) return [selectedCamera.value || list[0]]
+  const selected = selectedCamera.value
+  const rest = list.filter(c => c.id !== selected?.id)
+  const ordered = selected ? [selected, ...rest] : [...list]
+  return Array.from({ length: count }, (_, i) => ordered[i] || null)
+})
+
+function isLive(cam: any) {
+  return !!cam && cam.enabled !== false && cam.status === 'online'
+}
+
+function cameraState(cam: any) {
+  if (!cam?.enabled) return 'disabled'
+  return cam.status === 'online' ? 'online' : 'offline'
+}
+
+function typeText(type: string) {
+  const map: Record<string, string> = {
+    hikvision: '海康',
+    dahua: '大华',
+    other: '其他'
+  }
+  return map[type] || type || '未知'
+}
+
+function sceneStyle(cam: any) {
+  const hue = ((cam?.id || 1) * 47) % 360
+  return {
+    background: `radial-gradient(ellipse at 28% 30%, hsla(${hue}, 70%, 45%, 0.28) 0%, transparent 52%),
+      linear-gradient(180deg, #1e293b 0%, #0f172a 100%)`
+  }
+}
+
+function boxStyle(box: any) {
+  const bbox = box?.bbox || box || {}
+  return {
+    left: (bbox.x || 0) * 100 + '%',
+    top: (bbox.y || 0) * 100 + '%',
+    width: (bbox.w || 0) * 100 + '%',
+    height: (bbox.h || 0) * 100 + '%'
+  }
+}
+
+function formatConfidence(value: number) {
+  if (value == null) return ''
+  const pct = value <= 1 ? value * 100 : value
+  return `${pct.toFixed(0)}%`
+}
+
+function formatPtz(value: number | undefined) {
+  return Number(value || 0).toFixed(1)
+}
 
 function selectCamera(cam: any) {
   selectedCamera.value = cam
 }
 
-function getCameraForGrid(n: number) {
-  if (layoutMode.value === '1') {
-    return selectedCamera.value || cameras.value[0]
-  }
-  if (n === 1) return selectedCamera.value || cameras.value[0]
-  return cameras.value[n - 1] || null
-}
-
-function selectGridCamera(n: number) {
-  const cam = getCameraForGrid(n)
+function selectGridCamera(idx: number) {
+  const cam = gridSlots.value[idx]
   if (cam) selectedCamera.value = cam
 }
 
 function alertIcon(type: string) {
-  // Element Plus 图标库无 Fire/Parking 图标，统一使用 Warning/Bell
   return type === 'fire' ? Bell : Warning
 }
 
@@ -262,20 +315,46 @@ function formatTime(time: string) {
   return dayjs(time).format('HH:mm:ss')
 }
 
-async function loadCameras() {
+function applyFrames(frames: Record<string, any> = {}) {
+  Object.entries(frames).forEach(([id, frame]) => {
+    detectionData[Number(id)] = frame?.detections || []
+  })
+}
+
+function syncSelected() {
+  if (!cameras.value.length) {
+    selectedCamera.value = null
+    return
+  }
+  if (selectedCamera.value) {
+    const next = cameras.value.find(c => c.id === selectedCamera.value.id)
+    selectedCamera.value = next || cameras.value[0]
+  } else {
+    selectedCamera.value = cameras.value[0]
+  }
+}
+
+async function loadWall() {
   try {
-    const res: any = await cameraApi.getAll()
-    cameras.value = res || []
-    if (!selectedCamera.value && cameras.value.length > 0) {
-      selectedCamera.value = cameras.value[0]
-    }
-    // 初始化检测数据
-    cameras.value.forEach(cam => {
-      if (cam.status === 'online') {
-        fetchDetection(cam.id)
-      }
-    })
-  } catch (e) {}
+    const res: any = await cameraApi.getMonitorWall()
+    cameras.value = res.cameras || []
+    applyFrames(res.frames || {})
+    realtimeAlerts.value = res.alerts?.list || []
+    unhandledCount.value = res.alerts?.total || 0
+    syncSelected()
+  } catch {
+    await loadCamerasFallback()
+  }
+}
+
+async function loadCamerasFallback() {
+  const res: any = await cameraApi.getAll()
+  cameras.value = res || []
+  syncSelected()
+  cameras.value.forEach((cam: any) => {
+    if (isLive(cam)) fetchDetection(cam.id)
+  })
+  await loadAlerts()
 }
 
 async function fetchDetection(cameraId: number) {
@@ -302,19 +381,45 @@ function toggleFullscreen() {
   }
 }
 
-function handleScreenshot() {
-  ElMessage.success('截图已保存')
+async function handleScreenshot() {
+  if (!selectedCamera.value) {
+    ElMessage.warning('请先选择摄像头')
+    return
+  }
+  try {
+    const res: any = await cameraApi.snapshot(selectedCamera.value.id)
+    ElMessage.success(`截图已保存（#${res.id}，${res.detectionCount || 0} 个目标）`)
+  } catch (e) {}
 }
 
-function handleRecord() {
-  isRecording.value = !isRecording.value
-  ElMessage.info(isRecording.value ? '开始录制' : '录制已停止')
+async function handleRecord() {
+  if (!selectedCamera.value) {
+    ElMessage.warning('请先选择摄像头')
+    return
+  }
+  if (!isLive(selectedCamera.value)) {
+    ElMessage.warning('离线或停用设备无法录制')
+    return
+  }
+  try {
+    const action = selectedCamera.value.recording ? 'stop' : 'start'
+    const res: any = await cameraApi.record(selectedCamera.value.id, { action })
+    selectedCamera.value.recording = !!res.recording
+    const idx = cameras.value.findIndex(c => c.id === selectedCamera.value.id)
+    if (idx >= 0) cameras.value[idx].recording = !!res.recording
+    ElMessage.info(res.recording ? '开始录制' : '录制已停止')
+  } catch (e) {}
 }
 
 async function handlePtz(direction: string) {
   if (!selectedCamera.value) return
   try {
-    await cameraApi.ptz(selectedCamera.value.id, { direction })
+    const res: any = await cameraApi.ptz(selectedCamera.value.id, { direction })
+    if (res?.ptz) {
+      selectedCamera.value.ptz = res.ptz
+      const idx = cameras.value.findIndex(c => c.id === selectedCamera.value.id)
+      if (idx >= 0) cameras.value[idx].ptz = res.ptz
+    }
     ElMessage.info(`云台${directionText(direction)}指令已发送`)
   } catch (e) {}
 }
@@ -332,29 +437,36 @@ function viewAlertDetail(alert: any) {
 }
 
 onMounted(() => {
-  loadCameras()
-  loadAlerts()
+  loadWall()
 
   timeTimer = setInterval(() => {
     currentTime.value = dayjs().format('YYYY-MM-DD HH:mm:ss')
   }, 1000)
   currentTime.value = dayjs().format('YYYY-MM-DD HH:mm:ss')
+  wallTimer = setInterval(loadWall, 8000)
 
-  detectionTimer = setInterval(() => {
-    cameras.value.forEach(cam => {
-      if (cam.status === 'online') {
-        fetchDetection(cam.id)
-      }
-    })
-  }, 2000)
-
-  alertTimer = setInterval(loadAlerts, 10000)
+  const offFrame = onRealtime('detection:frame', (frame) => {
+    if (frame?.cameraId == null) return
+    detectionData[frame.cameraId] = frame.detections || []
+    const cam = cameras.value.find(c => c.id === frame.cameraId)
+    if (cam) {
+      cam.detectionCount = (frame.detections || []).length
+      cam.fps = frame.fps
+      cam.lastFrameAt = frame.timestamp
+    }
+  })
+  const offAlert = onRealtime('alert:created', (alert) => {
+    if (!alert) return
+    realtimeAlerts.value = [alert, ...realtimeAlerts.value].slice(0, 20)
+    unhandledCount.value += 1
+  })
+  realtimeOffs.push(offFrame, offAlert)
 })
 
 onUnmounted(() => {
   clearInterval(timeTimer)
-  clearInterval(detectionTimer)
-  clearInterval(alertTimer)
+  clearInterval(wallTimer)
+  realtimeOffs.forEach((fn) => fn())
 })
 </script>
 
@@ -455,6 +567,10 @@ onUnmounted(() => {
   background: #d1d5db;
 }
 
+.cam-status.disabled .status-dot {
+  background: #faad14;
+}
+
 .monitor-main {
   flex: 1;
   display: flex;
@@ -551,16 +667,19 @@ onUnmounted(() => {
   font-size: 14px;
 }
 
-.mock-video {
+.offline-meta {
+  margin-top: 6px;
+  font-size: 12px;
+  color: #9ca3af;
+}
+
+.camera-scene {
   width: 100%;
   height: 100%;
-  background: 
-    radial-gradient(ellipse at 30% 30%, rgba(59, 130, 246, 0.2) 0%, transparent 50%),
-    linear-gradient(180deg, #1e293b 0%, #0f172a 100%);
   position: relative;
 }
 
-.mock-video::after {
+.camera-scene::after {
   content: '';
   position: absolute;
   inset: 0;
@@ -568,8 +687,8 @@ onUnmounted(() => {
     0deg,
     transparent,
     transparent 2px,
-    rgba(0, 0, 0, 0.3) 2px,
-    rgba(0, 0, 0, 0.3) 4px
+    rgba(0, 0, 0, 0.28) 2px,
+    rgba(0, 0, 0, 0.28) 4px
   );
   pointer-events: none;
 }
@@ -639,12 +758,26 @@ onUnmounted(() => {
   font-weight: 600;
 }
 
+.live-badge.recording {
+  background: rgba(245, 34, 45, 0.95);
+}
+
 .live-dot {
   width: 6px;
   height: 6px;
   border-radius: 50%;
   background: #fff;
   animation: blink 1s ease-in-out infinite;
+}
+
+.video-meta {
+  position: absolute;
+  top: 32px;
+  left: 8px;
+  color: rgba(255, 255, 255, 0.85);
+  font-size: 11px;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.8);
+  z-index: 10;
 }
 
 .video-timestamp {
@@ -730,6 +863,15 @@ onUnmounted(() => {
   display: flex;
   flex-direction: column;
   gap: 8px;
+}
+
+.ptz-readout {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-family: 'JetBrains Mono', Consolas, monospace;
+  font-size: 12px;
+  color: #4b5563;
 }
 
 .alert-sidebar {

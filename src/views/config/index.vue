@@ -18,7 +18,7 @@
               <span>检测参数</span>
             </el-menu-item>
             <el-menu-item index="/config/strategies">
-              <el-icon><Shield /></el-icon>
+              <el-icon><Lock /></el-icon>
               <span>布防策略</span>
             </el-menu-item>
             <el-menu-item index="/config/notification">
@@ -47,9 +47,11 @@
 
           <el-descriptions title="系统信息" :column="2" border style="margin-bottom: 24px">
             <el-descriptions-item label="系统名称">{{ settings.system?.title || '-' }}</el-descriptions-item>
-            <el-descriptions-item label="版本号">{{ systemInfo.system?.version || '-' }}</el-descriptions-item>
+            <el-descriptions-item label="版本号">{{ systemInfo.system?.version || settings.system?.version || '-' }}</el-descriptions-item>
             <el-descriptions-item label="运行环境">{{ systemInfo.system?.environment || '-' }}</el-descriptions-item>
             <el-descriptions-item label="运行时长">{{ systemInfo.system?.uptime || '-' }}</el-descriptions-item>
+            <el-descriptions-item label="CPU">{{ systemInfo.system?.cpu || '-' }}%</el-descriptions-item>
+            <el-descriptions-item label="内存">{{ systemInfo.system?.memory || '-' }}%</el-descriptions-item>
           </el-descriptions>
 
           <el-divider />
@@ -115,11 +117,13 @@ import { ref, reactive, onMounted } from 'vue'
 import { useRoute } from 'vue-router'
 import { configApi } from '@/api'
 import { useUserStore } from '@/stores/user'
+import { useAppStore } from '@/stores/app'
 import { ElMessage } from 'element-plus'
 import { Setting, Aim, Lock, Message, User } from '@element-plus/icons-vue'
 
 const route = useRoute()
 const userStore = useUserStore()
+const appStore = useAppStore()
 const loading = ref(false)
 const saveLoading = ref(false)
 const settings = reactive<any>({})
@@ -158,14 +162,15 @@ async function loadData() {
 async function handleSave() {
   saveLoading.value = true
   try {
-    await configApi.updateSettings({
+    const res: any = await configApi.updateSettings({
       system: { title: settingsForm.systemTitle },
       alertDeduplication: {
         enabled: settingsForm.dedupEnabled,
         interval: settingsForm.dedupInterval
       }
     })
-    ElMessage.success('设置已保存')
+    appStore.applySystemTitle(settingsForm.systemTitle, res?.settings?.system?.version)
+    ElMessage.success('设置已保存并立即生效')
     loadData()
   } catch (e) {
     // 错误已处理

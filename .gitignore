@@ -87,6 +87,10 @@ logs/
 *.xlsx
 *.csv
 
+# Backend persisted store
+backend/data/*.json
+backend/data/*.sqlite3
+
 # Preview files
 .preview
 

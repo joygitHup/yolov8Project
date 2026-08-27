@@ -167,6 +167,33 @@
                 </el-form-item>
               </el-form>
             </el-tab-pane>
+
+            <el-tab-pane label="发送记录" name="logs">
+              <div class="log-toolbar">
+                <el-button size="small" @click="loadLogs">刷新记录</el-button>
+                <span class="log-tip">最近 {{ notificationLogs.length }} 条通知发送结果</span>
+              </div>
+              <el-table :data="notificationLogs" border stripe size="small" max-height="420">
+                <el-table-column prop="id" label="ID" width="70" />
+                <el-table-column label="渠道" width="100">
+                  <template #default="{ row }">{{ channelText(row.channel) }}</template>
+                </el-table-column>
+                <el-table-column label="类型" width="90">
+                  <template #default="{ row }">{{ row.kind === 'test' ? '测试' : '告警' }}</template>
+                </el-table-column>
+                <el-table-column label="结果" width="90">
+                  <template #default="{ row }">
+                    <el-tag :type="row.success ? 'success' : 'danger'" size="small">
+                      {{ row.success ? '成功' : '失败' }}
+                    </el-tag>
+                  </template>
+                </el-table-column>
+                <el-table-column prop="message" label="详情" min-width="220" show-overflow-tooltip />
+                <el-table-column label="时间" width="170">
+                  <template #default="{ row }">{{ formatLogTime(row.createdAt) }}</template>
+                </el-table-column>
+              </el-table>
+            </el-tab-pane>
           </el-tabs>
         </el-card>
       </el-col>
@@ -175,12 +202,13 @@
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, onMounted } from 'vue'
+import { ref, reactive, onMounted, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { configApi } from '@/api'
 import { useUserStore } from '@/stores/user'
 import { ElMessage } from 'element-plus'
 import { Setting, Aim, Lock, Message, User } from '@element-plus/icons-vue'
+import dayjs from 'dayjs'
 
 const route = useRoute()
 const userStore = useUserStore()
@@ -188,6 +216,7 @@ const loading = ref(false)
 const saveLoading = ref(false)
 const activeMenu = ref('/config/notification')
 const activeTab = ref('dingtalk')
+const notificationLogs = ref<any[]>([])
 
 const dingtalkForm = reactive<any>({
   enabled: true,
@@ -226,6 +255,28 @@ const weworkForm = reactive<any>({
   types: ['intrusion', 'fire', 'parking']
 })
 
+function channelText(channel: string) {
+  const map: Record<string, string> = {
+    dingtalk: '钉钉',
+    email: '邮件',
+    sms: '短信',
+    wework: '企业微信'
+  }
+  return map[channel] || channel
+}
+
+function formatLogTime(value?: string) {
+  if (!value) return '-'
+  return dayjs(value).format('YYYY-MM-DD HH:mm:ss')
+}
+
+async function loadLogs() {
+  try {
+    const res: any = await configApi.getNotificationLogs()
+    notificationLogs.value = res.list || []
+  } catch (e) {}
+}
+
 async function loadData() {
   loading.value = true
   try {
@@ -242,13 +293,13 @@ async function loadData() {
 async function handleSave() {
   saveLoading.value = true
   try {
-    await configApi.updateNotification({
-      dingtalk: dingtalkForm,
-      email: emailForm,
-      sms: smsForm,
-      wework: weworkForm
+    const res: any = await configApi.updateNotification({
+      dingtalk: { ...dingtalkForm },
+      email: { ...emailForm },
+      sms: { ...smsForm },
+      wework: { ...weworkForm }
     })
-    ElMessage.success('通知配置已保存')
+    ElMessage.success(res?.message || '通知配置已保存并立即生效')
   } catch (e) {
     // 错误已处理
   } finally {
@@ -258,9 +309,19 @@ async function handleSave() {
 
 async function testChannel(channel: string) {
   try {
-    ElMessage.success(`测试消息已发送到 ${channel}，请查看`)
+    const res: any = await configApi.testNotification(channel)
+    if (res?.success) {
+      ElMessage.success(res.message || '测试消息发送成功')
+    } else {
+      ElMessage.warning(res?.message || '测试消息发送失败')
+    }
+    if (activeTab.value === 'logs') loadLogs()
   } catch (e) {}
 }
+
+watch(activeTab, (tab) => {
+  if (tab === 'logs') loadLogs()
+})
 
 onMounted(() => {
   activeMenu.value = route.path
@@ -295,5 +356,17 @@ onMounted(() => {
 .card-title {
   font-weight: 600;
   font-size: 16px;
+}
+
+.log-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.log-tip {
+  font-size: 12px;
+  color: #9ca3af;
 }
 </style>

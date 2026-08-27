@@ -16,25 +16,25 @@
       <!-- 统计条 -->
       <el-row :gutter="12" class="stats-bar">
         <el-col :span="6">
-          <div class="stat-item total" @click="filterByStatus('')">
+          <div class="stat-item total" :class="{ active: !filterForm.status }" @click="filterByStatus('')">
             <div class="stat-num">{{ stats.total || 0 }}</div>
             <div class="stat-label">全部告警</div>
           </div>
         </el-col>
         <el-col :span="6">
-          <div class="stat-item unhandled" @click="filterByStatus('unhandled')">
+          <div class="stat-item unhandled" :class="{ active: filterForm.status === 'unhandled' }" @click="filterByStatus('unhandled')">
             <div class="stat-num">{{ stats.unhandled || 0 }}</div>
             <div class="stat-label">待处理</div>
           </div>
         </el-col>
         <el-col :span="6">
-          <div class="stat-item processing" @click="filterByStatus('processing')">
+          <div class="stat-item processing" :class="{ active: filterForm.status === 'processing' }" @click="filterByStatus('processing')">
             <div class="stat-num">{{ stats.processing || 0 }}</div>
             <div class="stat-label">处理中</div>
           </div>
         </el-col>
         <el-col :span="6">
-          <div class="stat-item resolved" @click="filterByStatus('resolved')">
+          <div class="stat-item resolved" :class="{ active: filterForm.status === 'resolved' }" @click="filterByStatus('resolved')">
             <div class="stat-num">{{ stats.resolved || 0 }}</div>
             <div class="stat-label">已处理</div>
           </div>
@@ -58,6 +58,13 @@
               <el-option label="低危" value="low" />
             </el-select>
           </el-form-item>
+          <el-form-item label="处理状态">
+            <el-select v-model="filterForm.status" placeholder="全部" clearable style="width: 120px">
+              <el-option label="待处理" value="unhandled" />
+              <el-option label="处理中" value="processing" />
+              <el-option label="已处理" value="resolved" />
+            </el-select>
+          </el-form-item>
           <el-form-item label="摄像头">
             <el-select v-model="filterForm.cameraId" placeholder="全部" clearable style="width: 150px">
               <el-option
@@ -67,6 +74,15 @@
                 :value="cam.id"
               />
             </el-select>
+          </el-form-item>
+          <el-form-item label="关键词">
+            <el-input
+              v-model="filterForm.keyword"
+              placeholder="描述 / 摄像头 / 备注"
+              clearable
+              style="width: 180px"
+              @keyup.enter="loadData"
+            />
           </el-form-item>
           <el-form-item label="时间范围">
             <el-date-picker
@@ -114,11 +130,16 @@
             </span>
           </template>
         </el-table-column>
-        <el-table-column prop="cameraName" label="摄像头" width="130" />
+        <el-table-column label="摄像头" min-width="150">
+          <template #default="{ row }">
+            <div>{{ row.cameraName }}</div>
+            <div class="cam-sub">{{ row.cameraLocation || row.cameraIp || '-' }}</div>
+          </template>
+        </el-table-column>
         <el-table-column prop="description" label="告警描述" min-width="180" show-overflow-tooltip />
         <el-table-column label="置信度" width="90">
           <template #default="{ row }">
-            <span>{{ (row.confidence * 100).toFixed(1) }}%</span>
+            <span>{{ formatConfidence(row.confidence) }}</span>
           </template>
         </el-table-column>
         <el-table-column label="状态" width="100">
@@ -194,9 +215,10 @@
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, onMounted } from 'vue'
+import { ref, reactive, onMounted, onUnmounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { alertApi, cameraApi } from '@/api'
+import { onRealtime } from '@/utils/realtime'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Refresh, Check, Warning } from '@element-plus/icons-vue'
 import dayjs from 'dayjs'
@@ -215,6 +237,7 @@ const stats = reactive<any>({ total: 0, unhandled: 0, processing: 0, resolved: 0
 const filterForm = reactive({
   type: '',
   level: '',
+  status: '',
   cameraId: '',
   keyword: ''
 })
@@ -226,6 +249,7 @@ const pagination = reactive({
   pageSize: 10,
   total: 0
 })
+const realtimeOffs: Array<() => void> = []
 
 function alertIcon(type: string) {
   // Element Plus 图标库无 Fire/Parking 等，统一用 Warning 图标
@@ -269,13 +293,20 @@ function statusTagType(status: string) {
   return map[status] || 'info'
 }
 
+function formatConfidence(value?: number) {
+  if (value == null || Number.isNaN(Number(value))) return '-'
+  const n = Number(value)
+  const pct = n <= 1 ? n * 100 : n
+  return `${pct.toFixed(1)}%`
+}
+
 function formatDate(date: string) {
   return dayjs(date).format('YYYY-MM-DD HH:mm:ss')
 }
 
 function filterByStatus(status: string) {
+  filterForm.status = status
   pagination.page = 1
-  // 这里可以通过状态筛选，为简化直接刷新
   loadData()
 }
 
@@ -319,6 +350,7 @@ async function loadData() {
 function resetFilter() {
   filterForm.type = ''
   filterForm.level = ''
+  filterForm.status = ''
   filterForm.cameraId = ''
   filterForm.keyword = ''
   dateRange.value = []
@@ -386,6 +418,20 @@ onMounted(() => {
   loadCameras()
   loadStats()
   loadData()
+  realtimeOffs.push(
+    onRealtime('alert:created', () => {
+      loadData()
+      loadStats()
+    }),
+    onRealtime('alert:updated', () => {
+      loadData()
+      loadStats()
+    })
+  )
+})
+
+onUnmounted(() => {
+  realtimeOffs.forEach((fn) => fn())
 })
 </script>
 
@@ -423,6 +469,11 @@ onMounted(() => {
 
 .stat-item:hover {
   transform: translateY(-2px);
+}
+
+.stat-item.active {
+  outline: 2px solid #1677ff;
+  outline-offset: 1px;
 }
 
 .stat-item.total {
@@ -475,4 +526,10 @@ onMounted(() => {
 .type-cell .intrusion { color: #f5222d; }
 .type-cell .parking { color: #faad14; }
 .type-cell .fire { color: #fa541c; }
+
+.cam-sub {
+  font-size: 12px;
+  color: #9ca3af;
+  margin-top: 2px;
+}
 </style>
