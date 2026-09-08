@@ -1,5 +1,7 @@
 import os
 
+from apps.systemcfg.model_names import DEFAULT_MODEL_CLASS_NAMES
+
 # Default local trained weights (override with env YOLO_WEIGHTS)
 DEFAULT_YOLO_WEIGHTS = os.environ.get(
     "YOLO_WEIGHTS",
@@ -26,6 +28,8 @@ DEFAULT_LABEL_TYPE_MAP = {
     "人员": "intrusion",
     "乱扔垃圾": "intrusion",
     "person": "intrusion",
+    "烟雾": "fire",
+    "烟雾小": "fire",
 }
 
 
@@ -36,7 +40,7 @@ def default_settings():
             "iouThreshold": 0.45,
             "fps": 2,
             "maxDetections": 100,
-            "categories": ["火焰", "乱停乱放", "乱扔垃圾", "网格区违停"],
+            "categories": list(DEFAULT_MODEL_CLASS_NAMES),
             "trackingEnabled": True,
             "trackLostFrames": 30,
             "modelPath": DEFAULT_YOLO_WEIGHTS,

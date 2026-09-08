@@ -1,15 +1,29 @@
 from django.contrib.auth import authenticate
+from django.contrib.auth.password_validation import validate_password
+from django.core.exceptions import ValidationError as DjangoValidationError
 from django.utils import timezone
 from django.db.models import Q
 from rest_framework.exceptions import AuthenticationFailed, NotFound, ValidationError
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
-from rest_framework.views import APIView
+from apps.common.apiview import APIView
 from apps.common.pagination import paginate_qs
 from apps.common.permissions import IsAdminRole
 from apps.common.tokens import issue_token
+from .authentication import bearer_token, clear_access_cookie, set_access_cookie
 from .models import User
 from .serializers import LoginSerializer, PasswordSerializer, UserSerializer
+
+
+def _checked_password(raw, user=None) -> str:
+    text = str(raw or "")
+    if not text.strip():
+        raise ValidationError("密码不能为空")
+    try:
+        validate_password(text, user=user)
+    except DjangoValidationError as exc:
+        raise ValidationError(list(exc.messages)) from exc
+    return text
 
 
 class LoginView(APIView):
@@ -29,17 +43,29 @@ class LoginView(APIView):
             raise AuthenticationFailed("用户名或密码错误")
         user.last_login = timezone.now()
         user.save(update_fields=["last_login"])
-        return Response({"token": issue_token(user), "user": UserSerializer(user).data})
+        token = issue_token(user)
+        response = Response({"user": UserSerializer(user).data})
+        set_access_cookie(response, token, request)
+        return response
 
 
 class LogoutView(APIView):
+    authentication_classes = []
+    permission_classes = [AllowAny]
+
     def post(self, request):
-        return Response({"message": "登出成功"})
+        response = Response({"message": "登出成功"})
+        clear_access_cookie(response)
+        return response
 
 
 class MeView(APIView):
     def get(self, request):
-        return Response(UserSerializer(request.user).data)
+        response = Response(UserSerializer(request.user).data)
+        raw = bearer_token(request)
+        if raw:
+            set_access_cookie(response, raw, request)
+        return response
 
 
 class ChangePasswordView(APIView):
@@ -48,9 +74,7 @@ class ChangePasswordView(APIView):
         ser.is_valid(raise_exception=True)
         if not request.user.check_password(ser.validated_data["oldPassword"]):
             raise ValidationError("原密码错误")
-        new_password = ser.validated_data["newPassword"]
-        if len(new_password) < 6:
-            raise ValidationError("新密码至少 6 位")
+        new_password = _checked_password(ser.validated_data["newPassword"], user=request.user)
         request.user.set_password(new_password)
         request.user.save()
         return Response({"message": "密码修改成功"})
@@ -75,10 +99,11 @@ class UserListCreateView(APIView):
             raise ValidationError("用户名不能为空")
         if User.objects.filter(username=username).exists():
             raise ValidationError("用户名已存在")
+        password = _checked_password(request.data.get("password"))
         enabled = request.data.get("enabled", True)
         user = User.objects.create_user(
             username=username,
-            password=request.data.get("password") or "123456",
+            password=password,
             name=request.data.get("realName") or request.data.get("name") or username,
             role=request.data.get("role") or "viewer",
             email=request.data.get("email") or "",
@@ -148,6 +173,7 @@ class ResetPasswordView(APIView):
         user = User.objects.filter(pk=pk).first()
         if not user:
             raise NotFound("用户不存在")
-        user.set_password(request.data.get("newPassword") or "123456")
+        password = _checked_password(request.data.get("newPassword"), user=user)
+        user.set_password(password)
         user.save()
         return Response({"message": "密码重置成功"})

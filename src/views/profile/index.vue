@@ -104,7 +104,7 @@ const passwordRules: FormRules = {
   ],
   newPassword: [
     { required: true, message: '请输入新密码', trigger: 'blur' },
-    { min: 6, message: '密码长度不少于6位', trigger: 'blur' }
+    { min: 8, message: '密码长度不少于8位', trigger: 'blur' }
   ],
   confirmPassword: [
     { required: true, message: '请确认新密码', trigger: 'blur' },

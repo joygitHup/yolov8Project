@@ -18,54 +18,52 @@ interface UserInfo {
 }
 
 export const useUserStore = defineStore('user', () => {
-  const token = ref<string>(localStorage.getItem('token') || '')
+  try {
+    localStorage.removeItem('token')
+    localStorage.removeItem('access_token')
+  } catch {
+    /* ignore */
+  }
   const userInfo = ref<UserInfo | null>(null)
 
-  const isLoggedIn = computed(() => !!token.value)
+  const isLoggedIn = computed(() => !!userInfo.value)
   const isAdmin = computed(() => userInfo.value?.role === 'admin')
   const isOperator = computed(() => userInfo.value?.role === 'operator')
   const isViewer = computed(() => userInfo.value?.role === 'viewer')
 
   async function login(username: string, password: string) {
     const res: any = await authApi.login({ username, password })
-    if (res.token) {
-      token.value = res.token
-      userInfo.value = {
-        ...res.user,
-        name: res.user?.name || res.user?.realName
-      }
-      localStorage.setItem('token', res.token)
+    if (!res?.user) {
+      throw new Error('登录失败')
+    }
+    userInfo.value = {
+      ...res.user,
+      name: res.user?.name || res.user?.realName
     }
     return res
   }
 
   async function fetchUserInfo() {
-    try {
-      const res: any = await authApi.getCurrentUser()
-      userInfo.value = {
-        ...res,
-        name: res.name || res.realName
-      }
-      return userInfo.value
-    } catch {
-      logout()
-      throw new Error('获取用户信息失败')
+    const res: any = await authApi.getCurrentUser()
+    userInfo.value = {
+      ...res,
+      name: res.name || res.realName
     }
+    return userInfo.value
   }
+
+  let loggingOut = false
 
   function logout() {
-    token.value = ''
     userInfo.value = null
-    localStorage.removeItem('token')
-  }
-
-  function setToken(t: string) {
-    token.value = t
-    localStorage.setItem('token', t)
+    if (loggingOut) return
+    loggingOut = true
+    authApi.logout().catch(() => undefined).finally(() => {
+      loggingOut = false
+    })
   }
 
   return {
-    token,
     userInfo,
     isLoggedIn,
     isAdmin,
@@ -73,7 +71,6 @@ export const useUserStore = defineStore('user', () => {
     isViewer,
     login,
     fetchUserInfo,
-    logout,
-    setToken
+    logout
   }
 })

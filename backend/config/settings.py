@@ -3,6 +3,8 @@ import time
 from pathlib import Path
 from datetime import timedelta
 
+from corsheaders.defaults import default_headers
+
 BASE_DIR = Path(__file__).resolve().parent.parent
 DATA_DIR = BASE_DIR / "data"
 DATA_DIR.mkdir(exist_ok=True)
@@ -33,9 +35,34 @@ os.environ.setdefault("ASGI_THREADS", "16")
 os.environ.setdefault("DJANGO_ASGI_THREADS", "16")
 
 SECRET_KEY = _secret_key()
-DEBUG = os.environ.get("DJANGO_DEBUG", "1").strip().lower() not in ("0", "false", "no", "off")
-_hosts = os.environ.get("DJANGO_ALLOWED_HOSTS", "*").strip()
-ALLOWED_HOSTS = [h.strip() for h in _hosts.split(",") if h.strip()] or ["*"]
+DEBUG = os.environ.get("DJANGO_DEBUG", "0").strip().lower() in ("1", "true", "yes", "on")
+_hosts = os.environ.get("DJANGO_ALLOWED_HOSTS", "localhost,127.0.0.1,[::1]").strip()
+ALLOWED_HOSTS = [h.strip() for h in _hosts.split(",") if h.strip()] or ["localhost", "127.0.0.1"]
+
+
+def _ingest_token() -> str:
+    env = (os.environ.get("INGEST_TOKEN") or "").strip()
+    if env:
+        return env
+    path = DATA_DIR / ".ingest_token"
+    try:
+        if path.is_file():
+            text = path.read_text(encoding="utf-8").strip()
+            if text:
+                return text
+    except OSError:
+        pass
+    import secrets
+
+    token = secrets.token_urlsafe(32)
+    try:
+        path.write_text(token, encoding="utf-8")
+    except OSError:
+        pass
+    return token
+
+
+INGEST_TOKEN = _ingest_token()
 
 INSTALLED_APPS = [
     "daphne",
@@ -80,7 +107,7 @@ if _pg_host and not _use_sqlite:
             "ENGINE": "django.db.backends.postgresql",
             "NAME": os.environ.get("POSTGRES_DB", "yolov8"),
             "USER": os.environ.get("POSTGRES_USER", "yolov8"),
-            "PASSWORD": os.environ.get("POSTGRES_PASSWORD", "yolov8"),
+            "PASSWORD": os.environ.get("POSTGRES_PASSWORD") or os.environ.get("PGPASSWORD") or "",
             "HOST": _pg_host,
             "PORT": os.environ.get("POSTGRES_PORT") or os.environ.get("PGPORT") or "5434",
             "CONN_MAX_AGE": 60,
@@ -96,7 +123,12 @@ else:
     }
 
 AUTH_USER_MODEL = "accounts.User"
-AUTH_PASSWORD_VALIDATORS = []
+AUTH_PASSWORD_VALIDATORS = [
+    {"NAME": "django.contrib.auth.password_validation.UserAttributeSimilarityValidator"},
+    {"NAME": "django.contrib.auth.password_validation.MinimumLengthValidator", "OPTIONS": {"min_length": 8}},
+    {"NAME": "django.contrib.auth.password_validation.CommonPasswordValidator"},
+    {"NAME": "django.contrib.auth.password_validation.NumericPasswordValidator"},
+]
 
 LANGUAGE_CODE = "zh-hans"
 TIME_ZONE = "Asia/Shanghai"
@@ -106,12 +138,25 @@ USE_TZ = True
 STATIC_URL = "static/"
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
-CORS_ALLOW_ALL_ORIGINS = True
+_cors = [x.strip() for x in os.environ.get("DJANGO_CORS_ORIGINS", "").split(",") if x.strip()]
+if _cors:
+    CORS_ALLOWED_ORIGINS = _cors
+else:
+    CORS_ALLOWED_ORIGIN_REGEXES = [
+        r"^https?://localhost(:\d+)?$",
+        r"^https?://127\.0\.0\.1(:\d+)?$",
+        r"^https?://\[::1\](:\d+)?$",
+    ]
+CORS_ALLOW_ALL_ORIGINS = False
 CORS_ALLOW_CREDENTIALS = True
+CORS_ALLOW_HEADERS = list(default_headers) + [
+    "authorization",
+    "x-ingest-token",
+]
 
 REST_FRAMEWORK = {
     "DEFAULT_AUTHENTICATION_CLASSES": (
-        "rest_framework_simplejwt.authentication.JWTAuthentication",
+        "apps.accounts.authentication.JWTHeaderOrCookieAuthentication",
     ),
     "DEFAULT_PERMISSION_CLASSES": (
         "rest_framework.permissions.IsAuthenticated",
@@ -137,8 +182,8 @@ REDIS_PREFIX = os.environ.get("REDIS_PREFIX", "yolov8")
 
 # MinIO: S3 API is :9000; console (browser) is :9001. Bucket already provisioned.
 MINIO_ENDPOINT = os.environ.get("MINIO_ENDPOINT", "127.0.0.1:9000")
-MINIO_ACCESS_KEY = os.environ.get("MINIO_ACCESS_KEY", "Admin")
-MINIO_SECRET_KEY = os.environ.get("MINIO_SECRET_KEY", "Admin123")
+MINIO_ACCESS_KEY = (os.environ.get("MINIO_ACCESS_KEY") or "").strip()
+MINIO_SECRET_KEY = (os.environ.get("MINIO_SECRET_KEY") or "").strip()
 MINIO_BUCKET = os.environ.get("MINIO_BUCKET", "yolov8pro")
 MINIO_SECURE = os.environ.get("MINIO_SECURE", "0") not in ("0", "false", "no", "off")
 EVIDENCE_BACKEND = os.environ.get("EVIDENCE_BACKEND", "minio").strip().lower() or "minio"

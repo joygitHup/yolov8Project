@@ -107,32 +107,34 @@ def normalize_dedup(raw):
     }
 
 
-def normalize_detection(raw):
+def normalize_detection(raw, *, user_set=None):
     from apps.systemcfg.defaults import DEFAULT_LABEL_TYPE_MAP, DEFAULT_YOLO_WEIGHTS
+    from apps.systemcfg.model_names import enabled_categories, model_class_names
 
     raw = raw or {}
     categories = raw.get("categories") or []
     if not isinstance(categories, list):
         categories = []
-    label_map = raw.get("labelTypeMap")
-    if not isinstance(label_map, dict) or not label_map:
-        label_map = dict(DEFAULT_LABEL_TYPE_MAP)
-    else:
-        cleaned = {}
-        for k, v in label_map.items():
+    label_map = dict(DEFAULT_LABEL_TYPE_MAP)
+    raw_map = raw.get("labelTypeMap")
+    if isinstance(raw_map, dict) and raw_map:
+        for k, v in raw_map.items():
             key = str(k).strip()
             val = str(v).strip()
             if key and val in ("intrusion", "parking", "fire"):
-                cleaned[key] = val
-        label_map = cleaned or dict(DEFAULT_LABEL_TYPE_MAP)
+                label_map[key] = val
 
     model_path = str(raw.get("modelPath") or DEFAULT_YOLO_WEIGHTS).strip() or DEFAULT_YOLO_WEIGHTS
+    if user_set is None:
+        user_set = _as_bool(raw.get("categoriesUserSet"), False)
+    model_names = model_class_names(model_path)
     return {
         "confidenceThreshold": round(_as_float(raw.get("confidenceThreshold"), 0.5, 0.1, 0.95), 2),
         "iouThreshold": round(_as_float(raw.get("iouThreshold"), 0.45, 0.1, 0.9), 2),
         "fps": round(_as_float(raw.get("fps"), 2, 0.5, 10), 2),
         "maxDetections": _as_int(raw.get("maxDetections"), 100, 10, 500),
-        "categories": [str(item) for item in categories],
+        "categories": enabled_categories(categories, model_names, user_set=user_set),
+        "categoriesUserSet": bool(user_set),
         "trackingEnabled": _as_bool(raw.get("trackingEnabled"), True),
         "trackLostFrames": _as_int(raw.get("trackLostFrames"), 30, 1, 100),
         "modelPath": model_path,
@@ -220,7 +222,7 @@ def apply_settings_patch(patch):
         elif key == "alertDeduplication":
             merged = normalize_dedup(merged)
         elif key == "detection":
-            merged = normalize_detection(merged)
+            merged = normalize_detection(merged, user_set=True)
         elif key == "flywheel":
             merged = normalize_flywheel(merged)
         save_section(key, merged)

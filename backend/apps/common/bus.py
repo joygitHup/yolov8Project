@@ -54,11 +54,14 @@ def _get_producer():
     with _producer_lock:
         if _producer is not None:
             return _producer
+        from django.core.serializers.json import DjangoJSONEncoder
         from kafka import KafkaProducer
 
         _producer = KafkaProducer(
             bootstrap_servers=bootstrap().split(","),
-            value_serializer=lambda v: json.dumps(v, ensure_ascii=False).encode("utf-8"),
+            value_serializer=lambda v: json.dumps(
+                v, ensure_ascii=False, cls=DjangoJSONEncoder
+            ).encode("utf-8"),
             key_serializer=lambda k: (k or "").encode("utf-8"),
             acks="all",
             linger_ms=20,
@@ -84,8 +87,11 @@ def produce_frame(payload: dict) -> None:
 
 
 def produce_alert(payload: dict) -> None:
+    from django.core.serializers.json import DjangoJSONEncoder
+
     aid = payload.get("id") or payload.get("alertId")
-    produce(topic_alerts(), payload, key=str(aid or ""))
+    safe = json.loads(json.dumps(payload, cls=DjangoJSONEncoder))
+    produce(topic_alerts(), safe, key=str(aid or ""))
 
 
 def start_frames_consumer(handler) -> None:
@@ -141,7 +147,10 @@ def _consume_loop(topic: str, handler) -> None:
                 for _tp, batch in records.items():
                     for rec in batch:
                         try:
-                            handler(rec.value or {})
+                            payload = _authorized_frame(rec.value or {})
+                            if payload is None:
+                                continue
+                            handler(payload)
                         except Exception:
                             logger.exception("kafka handler failed topic=%s offset=%s", topic, rec.offset)
                 try:
@@ -161,3 +170,20 @@ def _consume_loop(topic: str, handler) -> None:
         if not _stop.wait(2.0):
             continue
         break
+
+
+def _authorized_frame(msg) -> dict | None:
+    from apps.common.framesig import verify_frame
+    from apps.inference.remote import ingest_token
+
+    if not isinstance(msg, dict):
+        return None
+    secret = ingest_token()
+    sig = str(msg.get("sig") or "")
+    body = dict(msg)
+    body.pop("sig", None)
+    body.pop("ingestToken", None)
+    if not verify_frame(body, secret, sig):
+        logger.warning("kafka detect.frames rejected (bad signature)")
+        return None
+    return body

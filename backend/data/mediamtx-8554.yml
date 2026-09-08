@@ -7,18 +7,18 @@ rtspAddress: :8554
 
 # Native HLS for browser playback (replaces Django data/hls remux)
 hls: yes
-hlsAddress: :8888
+hlsAddress: 127.0.0.1:8888
 hlsAlwaysRemux: yes
 hlsVariant: mpegts
 hlsSegmentCount: 7
 hlsSegmentDuration: 1s
 hlsSegmentMaxSize: 50M
-hlsAllowOrigins: ["*"]
+hlsAllowOrigins: []
 
 # WebRTC ready for future UI (not wired in frontend yet)
 webrtc: yes
-webrtcAddress: :8889
-webrtcAllowOrigins: ["*"]
+webrtcAddress: 127.0.0.1:8889
+webrtcAllowOrigins: []
 
 authMethod: internal
 authInternalUsers:

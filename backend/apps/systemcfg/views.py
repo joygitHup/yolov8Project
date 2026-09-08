@@ -3,7 +3,7 @@ import time
 from rest_framework.exceptions import NotFound, ValidationError
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
-from rest_framework.views import APIView
+from apps.common.apiview import APIView
 
 from django.conf import settings as dj_settings
 from django.utils import timezone
@@ -52,6 +52,14 @@ def _clamp(value, low, high, default):
     return max(low, min(high, number))
 
 
+def _detection_payload(detection):
+    from apps.systemcfg.model_names import model_class_names
+
+    data = dict(detection or {})
+    data["categoryOptions"] = model_class_names(data.get("modelPath"))
+    return data
+
+
 class PublicSettingsView(APIView):
     authentication_classes = []
     permission_classes = [AllowAny]
@@ -93,7 +101,7 @@ class DetectionView(APIView):
         return [IsAuthenticated()]
 
     def get(self, request):
-        return Response(get_section("detection"))
+        return Response(_detection_payload(get_section("detection")))
 
     def put(self, request):
         import logging
@@ -102,9 +110,10 @@ class DetectionView(APIView):
 
         patch = dict(request.data)
         before = get_section("detection")
-        detection = normalize_detection(deep_merge(before, patch))
+        detection = normalize_detection(deep_merge(before, patch), user_set=True)
         save_section("detection", detection)
-        _publish("detection", {"detection": detection})
+        payload = _detection_payload(detection)
+        _publish("detection", {"detection": payload})
 
         new_path = (detection.get("modelPath") or "").strip()
         old_path = (before.get("modelPath") or "").strip()
@@ -124,8 +133,14 @@ class DetectionView(APIView):
             job_write_yaml({})
         except Exception:
             pass
+        try:
+            from apps.flywheel.relabel import schedule_repair
 
-        return Response({"message": "检测参数已更新并立即生效", "detection": detection})
+            schedule_repair(force=True)
+        except Exception:
+            pass
+
+        return Response({"message": "检测参数已更新并立即生效", "detection": payload})
 
 
 class NotificationView(APIView):

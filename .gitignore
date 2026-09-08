@@ -91,6 +91,7 @@ logs/
 backend/data/*.json
 backend/data/*.sqlite3
 backend/data/.secret_key
+backend/data/.ingest_token
 backend/data/hls/**
 !backend/data/hls/.gitkeep
 backend/data/alerts/**

@@ -94,20 +94,12 @@
 
             <el-divider />
 
-            <h4 class="section-title">检测类别（本地模型）</h4>
+            <h4 class="section-title">检测类别（当前权重）</h4>
             <el-form-item label="启用的类别">
-              <el-checkbox-group v-model="form.categories">
-                <el-checkbox value="火焰">火焰</el-checkbox>
-                <el-checkbox value="乱停乱放">乱停乱放</el-checkbox>
-                <el-checkbox value="乱扔垃圾">乱扔垃圾</el-checkbox>
-                <el-checkbox value="网格区违停">网格区违停</el-checkbox>
-                <el-checkbox value="person">人员</el-checkbox>
-                <el-checkbox value="car">轿车</el-checkbox>
-                <el-checkbox value="truck">卡车</el-checkbox>
-                <el-checkbox value="fire">火焰(en)</el-checkbox>
-                <el-checkbox value="smoke">烟雾</el-checkbox>
+              <el-checkbox-group v-model="form.categories" class="category-group">
+                <el-checkbox v-for="name in categoryOptions" :key="name" :value="name">{{ name }}</el-checkbox>
               </el-checkbox-group>
-              <div class="form-desc">与布防策略类型映射：火焰→火灾，乱停/网格区违停→违停，乱扔垃圾→入侵</div>
+              <div class="form-desc">勾选列表来自当前模型权重的类别名。取消勾选只过滤告警，不会改模型输出的 class id。布防映射：火焰/烟雾→火灾，乱停/网格区违停/轿车/卡车→违停，人员/乱扔垃圾→入侵</div>
             </el-form-item>
 
             <el-divider />
@@ -282,12 +274,14 @@ const form = reactive({
   iouThreshold: 0.45,
   fps: 2,
   maxDetections: 100,
-  categories: ['火焰', '乱停乱放', '乱扔垃圾', '网格区违停'] as string[],
+  categories: [] as string[],
   trackingEnabled: true,
   trackLostFrames: 30,
   modelPath: '',
   inferEnabled: true
 })
+
+const categoryOptions = ref<string[]>([])
 
 const flywheel = reactive({
   enabled: true,
@@ -353,6 +347,9 @@ async function loadData() {
       form.trackLostFrames = res.trackLostFrames ?? 30
       form.modelPath = res.modelPath || ''
       form.inferEnabled = res.inferEnabled !== false
+      categoryOptions.value = Array.isArray(res.categoryOptions) && res.categoryOptions.length
+        ? [...res.categoryOptions]
+        : [...form.categories]
     }
     if (fw) Object.assign(flywheel, fw)
     if (st) {
@@ -396,6 +393,9 @@ async function handleSave() {
         modelPath: res.detection.modelPath || form.modelPath,
         inferEnabled: res.detection.inferEnabled !== false
       })
+      if (Array.isArray(res.detection.categoryOptions) && res.detection.categoryOptions.length) {
+        categoryOptions.value = [...res.detection.categoryOptions]
+      }
     }
     if (fwRes?.flywheel) Object.assign(flywheel, fwRes.flywheel)
     ElMessage.success(res?.message || '检测参数已更新并立即生效')
@@ -534,6 +534,12 @@ onUnmounted(() => {
   font-size: 12px;
   color: #9ca3af;
   margin-top: 6px;
+}
+
+.category-group {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
 }
 
 .form-tip {

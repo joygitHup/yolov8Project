@@ -1,8 +1,11 @@
 """YOLO txt + data.yaml helpers for the flywheel dataset."""
 from __future__ import annotations
 
-from apps.systemcfg.defaults import DEFAULT_LABEL_TYPE_MAP
-from apps.systemcfg.services import get_section
+from apps.systemcfg.defaults import DEFAULT_YOLO_WEIGHTS
+from apps.systemcfg.model_names import (
+    model_class_names,
+    resolve_to_model_name,
+)
 
 DATASET_PREFIX = "flywheel/dataset"
 IMAGES_PREFIX = f"{DATASET_PREFIX}/auto/images"
@@ -11,88 +14,40 @@ REVIEWED_IMAGES_PREFIX = f"{DATASET_PREFIX}/reviewed/images"
 REVIEWED_LABELS_PREFIX = f"{DATASET_PREFIX}/reviewed/labels"
 DATA_YAML_KEY = f"{DATASET_PREFIX}/data.yaml"
 
-# English / COCO-ish names → Chinese class names used by the trained weights.
-# Do not collapse bus/bike/moto into 轿车.
-LABEL_ALIASES = {
-    "person": "人员",
-    "car": "轿车",
-    "truck": "卡车",
-    "bus": "公交车",
-    "bicycle": "自行车",
-    "motorcycle": "摩托车",
-    "bike": "自行车",
-    "motorbike": "摩托车",
-    "fire": "火焰",
-    "smoke": "烟雾",
-}
-
 
 def class_names() -> list[str]:
-    cats = get_section("detection").get("categories") or []
-    names: list[str] = []
-    seen: set[str] = set()
-    for item in cats:
-        text = str(item).strip()
-        if text and text not in seen:
-            names.append(text)
-            seen.add(text)
-    return names or ["火焰", "乱停乱放", "乱扔垃圾", "网格区违停"]
+    """Full names inside the current .pt. Not the enabled-checkbox subset."""
+    path = DEFAULT_YOLO_WEIGHTS
+    try:
+        from apps.systemcfg.models import SystemSetting
 
-
-def _alias_for(label: str) -> str | None:
-    text = str(label or "").strip()
-    if not text:
-        return None
-    return LABEL_ALIASES.get(text) or LABEL_ALIASES.get(text.lower())
+        row = SystemSetting.objects.filter(key="detection").only("value").first()
+        if row and isinstance(row.value, dict) and row.value.get("modelPath"):
+            path = str(row.value.get("modelPath") or path)
+    except Exception:
+        pass
+    return model_class_names(path)
 
 
 def class_id_for_label(label: str, names: list[str] | None = None) -> int | None:
     """Map a raw YOLO/COCO name onto dataset class indices.
 
-    Distinct vehicles stay distinct: bus→公交车, bicycle→自行车, motorcycle→摩托车.
+    bus/bike/moto stay distinct when those classes exist; otherwise 乱停乱放.
     Never fall through to 轿车 just because they share the parking alert type.
     """
     names = names if names is not None else class_names()
-    text = str(label or "").strip()
-    if not text:
+    resolved = resolve_to_model_name(label, names)
+    if not resolved:
         return None
-    index = {name: i for i, name in enumerate(names)}
-    lower = {name.lower(): i for i, name in enumerate(names)}
-    if text in index:
-        return index[text]
-    if text.lower() in lower:
-        return lower[text.lower()]
-    alias = _alias_for(text)
-    if alias:
-        if alias in index:
-            return index[alias]
-        if alias.lower() in lower:
-            return lower[alias.lower()]
+    try:
+        return names.index(resolved)
+    except ValueError:
         return None
-    if text in LABEL_ALIASES.values():
-        return None
-    mapping = get_section("detection").get("labelTypeMap") or dict(DEFAULT_LABEL_TYPE_MAP)
-    alert_type = mapping.get(text) or mapping.get(text.lower())
-    if not alert_type:
-        folded = {str(k).lower(): v for k, v in mapping.items()}
-        alert_type = folded.get(text.lower())
-    if not alert_type:
-        return None
-    for i, name in enumerate(names):
-        if mapping.get(name) == alert_type:
-            return i
-    return None
 
 
 def canonical_label(label: str, names: list[str] | None = None) -> str | None:
     names = names if names is not None else class_names()
-    text = str(label or "").strip()
-    if not text:
-        return None
-    cid = class_id_for_label(text, names)
-    if cid is not None:
-        return names[cid]
-    return _alias_for(text)
+    return resolve_to_model_name(label, names)
 
 
 def boxes_to_yolo_txt(boxes, names: list[str] | None = None) -> tuple[str, int]:

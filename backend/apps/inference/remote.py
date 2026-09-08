@@ -24,6 +24,14 @@ def ingest_callback_url() -> str:
 
 
 def ingest_token() -> str:
+    try:
+        from django.conf import settings
+
+        text = str(getattr(settings, "INGEST_TOKEN", "") or "").strip()
+        if text:
+            return text
+    except Exception:
+        pass
     return (os.environ.get("INGEST_TOKEN") or "").strip()
 
 
@@ -38,7 +46,7 @@ def infer_mode() -> str:
 def _request(method: str, path: str, body: dict | None = None, timeout: float = 8.0) -> dict[str, Any]:
     url = f"{service_url()}{path}"
     data = None
-    headers = {"Accept": "application/json"}
+    headers = {"Accept": "application/json", "X-Ingest-Token": ingest_token()}
     if body is not None:
         data = json.dumps(body).encode("utf-8")
         headers["Content-Type"] = "application/json"
@@ -81,7 +89,7 @@ def start_camera(
         "fps": fps,
         "modelPath": model_path,
         "callbackUrl": ingest_callback_url(),
-        "ingestToken": ingest_token() or None,
+        "ingestToken": ingest_token(),
     }
     return _request("POST", "/cameras/start", body)
 

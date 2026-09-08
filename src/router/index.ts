@@ -122,21 +122,23 @@ router.beforeEach(async (to, from, next) => {
 
   // 不需要登录的页面
   if (to.meta.requiresAuth === false) {
-    if (to.path === '/login' && userStore.isLoggedIn) {
-      next('/')
-    } else {
-      next()
+    if (to.path === '/login') {
+      try {
+        if (!userStore.userInfo) {
+          await userStore.fetchUserInfo()
+        }
+        if (userStore.isLoggedIn) {
+          next((to.query.redirect as string) || '/')
+          return
+        }
+      } catch {
+        /* stay on login */
+      }
     }
+    next()
     return
   }
 
-  // 需要登录
-  if (!userStore.token) {
-    next({ path: '/login', query: { redirect: to.fullPath } })
-    return
-  }
-
-  // 已登录，获取用户信息
   if (!userStore.userInfo) {
     try {
       await userStore.fetchUserInfo()

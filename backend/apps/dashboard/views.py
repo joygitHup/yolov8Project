@@ -1,5 +1,5 @@
 from rest_framework.response import Response
-from rest_framework.views import APIView
+from apps.common.apiview import APIView
 
 from apps.dashboard import services
 

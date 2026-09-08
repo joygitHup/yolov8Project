@@ -1,5 +1,6 @@
-from datetime import datetime
 import time
+
+from django.utils import timezone
 
 from apps.systemcfg.models import Strategy
 
@@ -18,7 +19,7 @@ def _enabled_strategies():
 
 
 def _minutes_now():
-    now = datetime.now()
+    now = timezone.localtime()
     return now.hour * 60 + now.minute
 
 

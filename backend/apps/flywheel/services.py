@@ -33,7 +33,13 @@ def camera_name_map(ids) -> dict[int, str]:
 def ensure_boxes(sample: FlywheelSample) -> list:
     existing = sample.boxes if isinstance(sample.boxes, list) else []
     if existing:
-        return canonical_boxes(existing)
+        boxes = canonical_boxes(existing)
+        old_labels = [str(item.get("label") or "") for item in existing if isinstance(item, dict)]
+        new_labels = [str(item.get("label") or "") for item in boxes]
+        if old_labels != new_labels:
+            write_auto_labels(sample, boxes)
+            sample.save(update_fields=["boxes", "box_count"])
+        return boxes
     raw = storage.get_bytes(sample.label_key) or b""
     text = raw.decode("utf-8", errors="ignore")
     boxes = yolo_txt_to_boxes(text)
@@ -64,10 +70,10 @@ def sample_to_dict(sample: FlywheelSample, *, with_boxes=False, names=None, came
         "reviewedBy": sample.reviewed_by or "",
         "reviewedAt": _iso(sample.reviewed_at),
         "createdAt": _iso(sample.created_at),
+        "classNames": names,
     }
     if with_boxes:
         data["boxes"] = ensure_boxes(sample)
-        data["classNames"] = names
     return data
 
 

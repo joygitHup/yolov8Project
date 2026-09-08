@@ -14,7 +14,7 @@ class Camera(models.Model):
     password = models.CharField(max_length=128, blank=True, default="")
     resolution = models.CharField(max_length=32, default="1920x1080")
     channels = models.IntegerField(default=1)
-    status = models.CharField(max_length=16, choices=STATUS_CHOICES, default="online")
+    status = models.CharField(max_length=16, choices=STATUS_CHOICES, default="offline")
     enabled = models.BooleanField(default=True)
     detection_types = models.JSONField(default=list)
     created_at = models.DateTimeField(auto_now_add=True)

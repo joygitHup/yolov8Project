@@ -14,8 +14,8 @@
     "server": "python backend/run.py",
     "runtime": "python -u backend/manage.py run_runtime",
     "build:client": "vue-tsc -b && vite build",
-    "mtx:docker": "docker compose up -d mediamtx",
-    "mq:docker": "docker compose up -d rabbitmq kafka",
+    "mtx:docker": "docker compose --profile mtx up -d mediamtx",
+    "mq:docker": "docker compose --profile mq up -d rabbitmq kafka",
     "jobs": "python backend/manage.py run_jobs"
   },
   "dependencies": {

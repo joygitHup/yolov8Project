@@ -187,7 +187,7 @@ def capture_clip(alert_id: int, rtsp: str, seconds: int = _CLIP_SECONDS, camera_
             urls.append(url)
     if not ffmpeg or not urls:
         return None
-    duration = max(3, min(int(seconds or _CLIP_SECONDS), 30))
+    duration = max(3, min(int(seconds or _CLIP_SECONDS), 12))
     fd, tmp_name = tempfile.mkstemp(suffix=".mp4")
     os.close(fd)
     tmp = Path(tmp_name)
@@ -210,7 +210,7 @@ def capture_clip(alert_id: int, rtsp: str, seconds: int = _CLIP_SECONDS, camera_
                     "-movflags", "+faststart", "-y", str(tmp),
                 ]
                 try:
-                    proc = subprocess.run(cmd, timeout=duration + 25, **popen_kwargs())
+                    proc = subprocess.run(cmd, timeout=min(18, duration + 10), **popen_kwargs())
                     if proc.returncode == 0 and tmp.is_file() and tmp.stat().st_size > 1024:
                         return storage.put_file(alert_id, "clip.mp4", tmp, "video/mp4")
                 except Exception as exc:

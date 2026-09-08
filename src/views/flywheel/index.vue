@@ -153,7 +153,7 @@ const loading = ref(false)
 const busy = ref(false)
 const sample = ref<Sample | null>(null)
 const boxes = ref<Box[]>([])
-const classNames = ref<string[]>(['火焰', '乱停乱放', '乱扔垃圾', '网格区违停'])
+const classNames = ref<string[]>([])
 const drawLabel = ref('火焰')
 const selectedId = ref(0)
 const imageUrl = ref('')
@@ -713,6 +713,16 @@ onMounted(async () => {
   loading.value = true
   try {
     await Promise.all([loadStats(), loadQueue(), refreshTrain()])
+    try {
+      const det: any = await configApi.getDetection()
+      const names = det?.categoryOptions || det?.categories || []
+      if (Array.isArray(names) && names.length && !classNames.value.length) {
+        classNames.value = [...names]
+        if (!names.includes(drawLabel.value)) drawLabel.value = names[0]
+      }
+    } catch {
+      /* ignore */
+    }
     await goNext(0)
   } finally {
     loading.value = false

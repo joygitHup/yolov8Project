@@ -255,7 +255,7 @@ function handleResetPwd(row: any) {
     cancelButtonText: '取消',
     inputType: 'password',
     inputValidator: (value: string) => {
-      if (!value || value.length < 6) return '密码长度至少 6 位'
+      if (!value || value.length < 8) return '密码长度至少 8 位'
       return true
     }
   }).then(async ({ value }: any) => {
@@ -277,6 +277,13 @@ function handleDelete(row: any) {
 }
 
 async function handleSubmit() {
+  if (dialogMode.value === 'add') {
+    const pwd = String(formData.password || '')
+    if (pwd.length < 8) {
+      ElMessage.warning('密码长度至少 8 位')
+      return
+    }
+  }
   submitLoading.value = true
   try {
     if (dialogMode.value === 'add') {

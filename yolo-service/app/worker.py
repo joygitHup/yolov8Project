@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import logging
-import os
 import threading
 import time
 from datetime import datetime, timezone
@@ -15,7 +14,10 @@ from app.schemas import CameraStatus, StartCameraRequest
 
 logger = logging.getLogger("yolo.worker")
 
-_DEFAULT_TOKEN = os.environ.get("INGEST_TOKEN", "").strip()
+def _default_token() -> str:
+    from app.auth import service_token
+
+    return service_token()
 _GRAB_FAIL_LIMIT = 8
 _GRAB_BACKOFF_SEC = 30.0
 
@@ -30,6 +32,8 @@ def _callback(
     headers = {"Content-Type": "application/json"}
     if ingest_token:
         headers["X-Ingest-Token"] = ingest_token
+    else:
+        return False, "ingest token missing"
     try:
         with httpx.Client(timeout=20.0) as client:
             resp = client.post(callback_url, json=payload, headers=headers)
@@ -44,7 +48,7 @@ def _emit(slot: "CameraSlot", payload: dict) -> tuple[bool, str]:
     """Kafka first (no JPEG). HTTP ingest only if Kafka is down."""
     from app import bus
 
-    if bus.produce_frame(payload):
+    if bus.produce_frame({**payload, "ingestToken": slot.ingest_token}):
         return True, ""
     light = dict(payload)
     light.pop("frameJpeg", None)
@@ -63,7 +67,7 @@ class CameraSlot:
         self.fps = max(0.5, min(float(req.fps or 1), 2.0))
         self.model_path = req.modelPath
         self.callback_url = (req.callbackUrl or "").strip()
-        self.ingest_token = (req.ingestToken or _DEFAULT_TOKEN or "").strip()
+        self.ingest_token = (req.ingestToken or _default_token() or "").strip()
         self.status = "idle"
         self.error = ""
         self.last_callback_ok = False
@@ -90,7 +94,7 @@ class CameraSlot:
         self.fps = max(0.5, min(float(req.fps or 1), 2.0))
         self.model_path = req.modelPath
         self.callback_url = (req.callbackUrl or "").strip()
-        self.ingest_token = (req.ingestToken or _DEFAULT_TOKEN or "").strip()
+        self.ingest_token = (req.ingestToken or _default_token() or "").strip()
 
 
 class SharedRtspWorker:

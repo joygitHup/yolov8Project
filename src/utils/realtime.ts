@@ -16,12 +16,12 @@ export function onRealtime(event: string, handler: RealtimeHandler) {
 
 export function connectRealtime() {
   const userStore = useUserStore()
-  if (!userStore.token || (socket && (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING))) {
+  if (!userStore.isLoggedIn || (socket && (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING))) {
     return
   }
   intentionalClose = false
   const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:'
-  socket = new WebSocket(`${protocol}//${location.host}/ws?token=${encodeURIComponent(userStore.token)}`)
+  socket = new WebSocket(`${protocol}//${location.host}/ws`)
 
   socket.onmessage = (event) => {
     try {
@@ -34,7 +34,7 @@ export function connectRealtime() {
 
   socket.onclose = () => {
     socket = null
-    if (!intentionalClose && useUserStore().token) {
+    if (!intentionalClose && useUserStore().isLoggedIn) {
       reconnectTimer = setTimeout(connectRealtime, 4000)
     }
   }

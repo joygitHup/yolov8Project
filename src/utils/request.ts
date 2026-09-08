@@ -7,6 +7,7 @@ import { useUserStore } from '@/stores/user'
 const request: AxiosInstance = axios.create({
   baseURL: '/api',
   timeout: 30000,
+  withCredentials: true,
   headers: {
     'Content-Type': 'application/json'
   }
@@ -15,10 +16,6 @@ const request: AxiosInstance = axios.create({
 // 请求拦截器
 request.interceptors.request.use(
   (config) => {
-    const userStore = useUserStore()
-    if (userStore.token) {
-      config.headers.Authorization = `Bearer ${userStore.token}`
-    }
     return config
   },
   (error) => {
@@ -40,9 +37,11 @@ request.interceptors.response.use(
 
       switch (status) {
         case 401:
-          ElMessage.error(data?.error || '登录已过期，请重新登录')
-          userStore.logout()
-          router.push('/login')
+          if (router.currentRoute.value.path !== '/login') {
+            ElMessage.error(data?.error || '登录已过期，请重新登录')
+            userStore.logout()
+            router.push('/login')
+          }
           break
         case 403:
           ElMessage.error(data?.error || '权限不足')

@@ -1,7 +1,7 @@
 """Ingest detection frames from the YOLO microservice."""
 from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
-from rest_framework.views import APIView
+from apps.common.apiview import APIView
 from rest_framework.exceptions import AuthenticationFailed, ValidationError
 
 from apps.inference.pipeline import ingest_detections
@@ -16,10 +16,9 @@ class InferenceIngestView(APIView):
 
     def post(self, request):
         expected = ingest_token()
-        if expected:
-            got = (request.headers.get("X-Ingest-Token") or "").strip()
-            if got != expected:
-                raise AuthenticationFailed("invalid ingest token")
+        got = (request.headers.get("X-Ingest-Token") or "").strip()
+        if not expected or got != expected:
+            raise AuthenticationFailed("invalid ingest token")
 
         camera_id = request.data.get("cameraId")
         if camera_id is None:

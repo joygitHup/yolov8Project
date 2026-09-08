@@ -90,6 +90,10 @@ def job_capture_clip(payload: dict) -> None:
         if camera_id:
             rdb.release_clip_lock(camera_id)
     if not url:
+        waits = int(payload.get("_preroll_waits") or 0) + 1
+        if waits <= 8:
+            payload["_preroll_waits"] = waits
+            raise Requeue(delay=2.0, count_attempt=False)
         raise RuntimeError(f"clip failed alert={alert_id}")
     alert.video_url = url
     alert.save(update_fields=["video_url"])

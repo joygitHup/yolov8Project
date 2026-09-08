@@ -68,8 +68,8 @@ def _client_or_none():
             endpoint = (getattr(settings, "MINIO_ENDPOINT", None) or "127.0.0.1:9000").strip()
             client = Minio(
                 endpoint,
-                access_key=getattr(settings, "MINIO_ACCESS_KEY", "") or "Admin",
-                secret_key=getattr(settings, "MINIO_SECRET_KEY", "") or "Admin123",
+            access_key=getattr(settings, "MINIO_ACCESS_KEY", "") or "",
+            secret_key=getattr(settings, "MINIO_SECRET_KEY", "") or "",
                 secure=bool(getattr(settings, "MINIO_SECURE", False)),
             )
             bucket = getattr(settings, "MINIO_BUCKET", "yolov8pro")

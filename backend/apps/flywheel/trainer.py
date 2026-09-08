@@ -16,6 +16,7 @@ from django.utils import timezone
 from apps.common import storage
 from apps.flywheel.dataset import boxes_to_yolo_txt, class_id_for_label
 from apps.flywheel.models import FlywheelSample, FlywheelTrainRun
+from apps.systemcfg.model_names import DEFAULT_MODEL_CLASS_NAMES
 from apps.systemcfg.services import get_section, save_section
 
 logger = logging.getLogger("flywheel.train")
@@ -148,7 +149,7 @@ def _load_base_names(root: Path) -> list[str]:
                     names.append(stripped.split(":", 1)[1].strip().strip("\"'"))
                 elif stripped.startswith("-"):
                     names.append(stripped[1:].strip().strip("\"'"))
-    return names or ["火焰", "乱停乱放", "乱扔垃圾", "网格区违停"]
+    return names or list(DEFAULT_MODEL_CLASS_NAMES)
 
 
 def _class_id(label: str, names: list[str]) -> int | None:

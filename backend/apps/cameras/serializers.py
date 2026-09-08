@@ -65,7 +65,7 @@ class CameraSerializer(serializers.ModelSerializer):
         return value
 
     def validate_status(self, value):
-        value = (value or "online").strip()
+        value = (value or "offline").strip()
         if value not in CAMERA_STATUSES:
             raise serializers.ValidationError("状态无效，可选：online / offline")
         return value

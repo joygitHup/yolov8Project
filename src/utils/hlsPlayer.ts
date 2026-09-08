@@ -24,7 +24,10 @@ export function attachHls(video: HTMLVideoElement, url: string): HlsHandle {
         // Tolerate briefly stale live playlists after segment gaps
         manifestLoadingMaxRetry: 4,
         levelLoadingMaxRetry: 4,
-        fragLoadingMaxRetry: 4
+        fragLoadingMaxRetry: 4,
+        xhrSetup: (xhr) => {
+          xhr.withCredentials = true
+        }
       })
       hls.loadSource(absoluteUrl)
       hls.attachMedia(video)
@@ -61,6 +64,7 @@ export function attachHls(video: HTMLVideoElement, url: string): HlsHandle {
     }
 
   if (video.canPlayType('application/vnd.apple.mpegurl')) {
+    video.crossOrigin = 'use-credentials'
     video.src = absoluteUrl
     video.addEventListener('loadedmetadata', () => {
       video.play().catch(() => undefined)

@@ -34,7 +34,7 @@ _threads: list[threading.Thread] = []
 _handlers_loaded = False
 MAX_ATTEMPTS = {
     "capture_snapshot": 2,
-    "capture_clip": 2,
+    "capture_clip": 8,
     "notify.alert": 3,
     "flywheel.sample": 5,
     "flywheel.yaml": 2,

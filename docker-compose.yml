@@ -1,14 +1,20 @@
 # Local helpers. Prefer host processes on Windows (see scripts/dev-all.ps1).
-#   docker compose up -d mediamtx rabbitmq kafka
+# Runtime owns MediaMTX (host mediamtx.exe). Docker MTX is opt-in:
+#   docker compose --profile mtx up -d mediamtx
+# Postgres:
+#   docker compose up -d postgres
+# Do not compose up rabbitmq/kafka on this machine — :5672 / :9092 are already taken.
+# Those services are behind profile `mq`:  docker compose --profile mq up -d
 
 services:
   mediamtx:
+    profiles: ["mtx"]
     image: bluenviron/mediamtx:1.9.3
     container_name: yolov8-mediamtx
     ports:
       - "8554:8554"
-      - "8888:8888"
-      - "8889:8889"
+      - "127.0.0.1:8888:8888"
+      - "127.0.0.1:8889:8889"
     volumes:
       - ./backend/data/mediamtx-8554.yml:/mediamtx.yml:ro
     command: ["/mediamtx.yml"]
@@ -32,9 +38,9 @@ services:
     ports:
       - "5434:5432"
     environment:
-      POSTGRES_USER: yolov8
-      POSTGRES_PASSWORD: yolov8
-      POSTGRES_DB: yolov8
+      POSTGRES_USER: ${POSTGRES_USER:-yolov8}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in the environment}
+      POSTGRES_DB: ${POSTGRES_DB:-yolov8}
     volumes:
       - yolov8_pg:/var/lib/postgresql/data
     restart: unless-stopped
@@ -42,6 +48,7 @@ services:
   # :5672 / :9092 are already in use on this machine — reuse those brokers
   # (RABBITMQ_URL / KAFKA_BOOTSTRAP). Do not `compose up` these unless the ports are free.
   rabbitmq:
+    profiles: ["mq"]
     image: rabbitmq:3.13-management-alpine
     container_name: yolov8-rabbitmq
     ports:
@@ -50,6 +57,7 @@ services:
     restart: unless-stopped
 
   kafka:
+    profiles: ["mq"]
     image: apache/kafka:3.8.1
     container_name: yolov8-kafka
     ports:
@@ -76,12 +84,13 @@ services:
       context: ./yolo-service
       dockerfile: Dockerfile
     ports:
-      - "8090:8090"
+      - "127.0.0.1:8090:8090"
     environment:
       YOLO_WEIGHTS: /weights/best.pt
       YOLO_DEVICE: cpu
       YOLO_SERVICE_PORT: "8090"
       REDIS_URL: redis://host.docker.internal:6379/2
+      INGEST_TOKEN: ${INGEST_TOKEN:-}
     volumes:
       - ${YOLO_WEIGHTS_HOST:-./weights}:/weights:ro
     restart: unless-stopped

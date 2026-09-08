@@ -63,7 +63,17 @@ def produce_frame(payload: dict) -> bool:
     prod = _get_producer()
     if prod is None:
         return False
+    secret = (payload.get("ingestToken") or "").strip()
+    if not secret:
+        from app.auth import service_token
+
+        secret = service_token()
+    if not secret:
+        logger.warning("kafka produce skipped: missing ingest token")
+        return False
     try:
+        from app.framesig import sign_frame
+
         body = {
             "cameraId": payload.get("cameraId"),
             "timestamp": payload.get("timestamp"),
@@ -72,6 +82,7 @@ def produce_frame(payload: dict) -> bool:
             "modelReady": payload.get("modelReady", True),
             "inferActive": payload.get("inferActive", True),
         }
+        body["sig"] = sign_frame(body, secret)
         key = str(body.get("cameraId") or "")
         fut = prod.send(topic_frames(), value=body, key=key)
         fut.get(timeout=4)

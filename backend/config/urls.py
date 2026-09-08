@@ -2,7 +2,7 @@ from django.urls import include, path
 from apps.common.views import HealthView
 from apps.cameras.views import CameraListCreateView
 from apps.alerts.views import AlertListView
-from apps.streaming.views import AlertMediaView, HlsMediaView
+from apps.streaming.views import AlertMediaView, HlsMediaView, MtxHlsProxyView
 
 urlpatterns = [
     path("api/health", HealthView.as_view()),
@@ -17,5 +17,6 @@ urlpatterns = [
     path("api/dashboard/", include("apps.dashboard.urls")),
     path("api/inference/", include("apps.inference.urls")),
     path("media/hls/<int:camera_id>/<str:filename>", HlsMediaView.as_view()),
+    path("media/mtx/<str:mtx_path>/<str:filename>", MtxHlsProxyView.as_view()),
     path("media/alerts/<int:alert_id>/<str:filename>", AlertMediaView.as_view()),
 ]

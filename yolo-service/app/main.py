@@ -4,9 +4,10 @@ import logging
 import os
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException
 
 from app import engine
+from app.auth import require_service_token
 from app.schemas import ReloadModelRequest, StartCameraRequest, StopCameraRequest
 from app.worker import manager
 
@@ -31,7 +32,7 @@ app = FastAPI(title="YOLOv8 Inference Service", version="1.0.0", lifespan=lifesp
 
 
 @app.get("/health")
-def health():
+def health(_token: str = Depends(require_service_token)):
     cams = manager.list_cameras()
     return {
         "ready": engine.is_ready(),
@@ -44,12 +45,12 @@ def health():
 
 
 @app.get("/cameras")
-def list_cameras():
+def list_cameras(_token: str = Depends(require_service_token)):
     return {"list": [c.model_dump() for c in manager.list_cameras()]}
 
 
 @app.post("/cameras/start")
-def start_camera(body: StartCameraRequest):
+def start_camera(body: StartCameraRequest, _token: str = Depends(require_service_token)):
     if not (body.rtsp or "").strip():
         raise HTTPException(status_code=400, detail="rtsp is required")
     if not engine.is_ready():
@@ -59,7 +60,7 @@ def start_camera(body: StartCameraRequest):
 
 
 @app.post("/cameras/stop")
-def stop_camera(body: StopCameraRequest):
+def stop_camera(body: StopCameraRequest, _token: str = Depends(require_service_token)):
     status = manager.stop_camera(body.cameraId)
     if not status:
         return {"cameraId": body.cameraId, "status": "idle", "message": "not running"}
@@ -67,13 +68,13 @@ def stop_camera(body: StopCameraRequest):
 
 
 @app.post("/cameras/stop-all")
-def stop_all():
+def stop_all(_token: str = Depends(require_service_token)):
     n = manager.stop_all()
     return {"stopped": n}
 
 
 @app.post("/model/reload")
-def reload_model(body: ReloadModelRequest):
+def reload_model(body: ReloadModelRequest, _token: str = Depends(require_service_token)):
     path = (body.modelPath or "").strip() or None
     ok = engine.ensure_model(path, force=True)
     if not ok:

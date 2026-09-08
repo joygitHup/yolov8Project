@@ -105,7 +105,7 @@ def concat_mp4(mtx_path: str) -> bytes | None:
     if not ffmpeg:
         return None
     files = _ordered_segments(mtx_path)
-    if len(files) < 2:
+    if not files:
         return None
     list_path = None
     out_path = None

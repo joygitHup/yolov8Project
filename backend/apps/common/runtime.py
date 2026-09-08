@@ -37,6 +37,13 @@ def start_runtime() -> None:
     except Exception:
         logger.exception("demo RTSP bootstrap failed")
     try:
+        from apps.streaming import mediamtx as mtx
+
+        ok = mtx.ensure_running()
+        print(f"[runtime] mediamtx ready={ok}", flush=True)
+    except Exception:
+        logger.exception("MediaMTX ensure failed")
+    try:
         n = stream_manager.ensure_online_cameras()
         logger.info("preview streams ready=%s", n)
     except Exception:
@@ -65,6 +72,12 @@ def start_runtime() -> None:
     except Exception:
         logger.exception("kafka detect.frames consumer failed to start")
     threading.Thread(target=_preview_loop, name="preview-ensure", daemon=True).start()
+    try:
+        from apps.flywheel.relabel import schedule_repair
+
+        schedule_repair(force=False)
+    except Exception:
+        logger.exception("flywheel relabel schedule failed")
     print("[runtime] started (pipeline + jobs + streaming)", flush=True)
     logger.info("runtime started (pipeline + jobs + streaming)")
 

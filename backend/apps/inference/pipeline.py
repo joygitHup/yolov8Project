@@ -31,7 +31,6 @@ _thread = None
 _tracks = {}
 _next_track_id = 1
 _warned_no_model = False
-_rr_index = 0
 _remote_started: set[int] = set()
 _remote_model_path: str | None = None
 _model_ready_cache = False
@@ -134,7 +133,6 @@ def infer_frame(camera, params, frame=None):
     conf_min = float(params.get("confidenceThreshold") or 0.5)
     iou_thr = float(params.get("iouThreshold") or 0.45)
     max_det = int(params.get("maxDetections") or 100)
-    categories = {str(c) for c in (params.get("categories") or [])}
 
     use_yolo = _yolo_enabled(params)
     detections = []
@@ -160,17 +158,7 @@ def infer_frame(camera, params, frame=None):
     else:
         detections = _mock_infer(params)
 
-    if categories and detections:
-        filtered = [d for d in detections if d.get("label") in categories]
-        if filtered or all(d.get("label") in categories for d in detections):
-            detections = filtered
-        elif not any(d.get("label") in categories for d in detections):
-            logger.debug(
-                "categories %s have no overlap with model labels; skipping category filter",
-                list(categories)[:8],
-            )
-        else:
-            detections = filtered
+    detections = _canonicalize_and_filter(detections, params)
 
     for det in detections:
         det["alertType"] = _alert_type_for_label(det.get("label"), params)
@@ -300,16 +288,34 @@ def _maybe_alert(camera, detections, params=None):
             logger.exception("flywheel alert sample failed id=%s", alert.id)
 
 
-def _normalize_raw_detections(detections, params):
-    """Attach alertType to raw YOLO boxes from the microservice."""
+def _canonicalize_and_filter(detections, params):
+    """Map English/COCO names onto the current .pt, then apply enabled categories."""
+    from apps.flywheel.dataset import canonical_label, class_names
+
+    names = class_names()
+    enabled = {str(item) for item in (params.get("categories") or []) if str(item).strip()}
     out = []
-    for i, det in enumerate(detections or []):
+    for det in detections or []:
         if not isinstance(det, dict):
             continue
         item = dict(det)
+        raw = item.get("label") or item.get("class") or ""
+        label = canonical_label(raw, names) or str(raw or "").strip()
+        item["label"] = label
+        if enabled and label not in enabled:
+            continue
+        item["alertType"] = _alert_type_for_label(label, params)
+        out.append(item)
+    return out
+
+
+def _normalize_raw_detections(detections, params):
+    """Attach alertType to raw YOLO boxes from the microservice."""
+    out = []
+    for i, det in enumerate(_canonicalize_and_filter(detections, params)):
+        item = dict(det)
         bbox = item.get("bbox") or {}
         item["id"] = item.get("id") or (i + 1)
-        item["label"] = str(item.get("label") or "")
         try:
             item["confidence"] = float(item.get("confidence") or 0)
         except (TypeError, ValueError):
@@ -320,7 +326,7 @@ def _normalize_raw_detections(detections, params):
             "w": float(bbox.get("w") or 0),
             "h": float(bbox.get("h") or 0),
         }
-        item["alertType"] = _alert_type_for_label(item.get("label"), params)
+        item["alertType"] = item.get("alertType") or _alert_type_for_label(item.get("label"), params)
         out.append(item)
     return out
 
@@ -592,67 +598,6 @@ def _loop_remote():
             logger.exception("remote orchestrator iteration failed")
         finally:
             close_old_connections()
-
-
-def _loop_local():
-    global _rr_index
-    logger.info("YOLOv8 推理流水线已启动（local 模式 + 布防策略门控）")
-    params0 = get_section("detection")
-    if _yolo_enabled(params0):
-        yolo_engine.ensure_model(params0.get("modelPath"))
-
-    while not _stop.wait(0.2):
-        close_old_connections()
-        try:
-            params = get_section("detection")
-            fps = max(0.5, min(float(params.get("fps") or 1), 2.0))
-            interval = max(0.8, 1.0 / fps)
-
-            cameras = list(
-                Camera.objects.filter(enabled=True, status="online").only(
-                    "id", "name", "rtsp", "status", "enabled", "detection_types"
-                )
-            )
-            active = []
-            for camera in cameras:
-                if should_infer(camera):
-                    active.append(camera)
-                else:
-                    set_frame(camera.id, {
-                        "cameraId": camera.id,
-                        "timestamp": timezone.now().isoformat(),
-                        "fps": fps,
-                        "detections": [],
-                        "inferActive": False,
-                        "modelReady": yolo_engine.is_ready(),
-                    })
-
-            if not active:
-                _stop.wait(interval)
-                continue
-
-            _rr_index = (_rr_index + 1) % len(active)
-            camera = active[_rr_index]
-            detections = infer_frame(camera, params)
-            ingest_detections(
-                camera.id,
-                detections,
-                {
-                    "fps": fps,
-                    "modelReady": yolo_engine.is_ready(),
-                    "inferActive": True,
-                    "timestamp": timezone.now().isoformat(),
-                },
-            )
-        except Exception:
-            logger.exception("local inference loop iteration failed")
-        finally:
-            close_old_connections()
-        _stop.wait(interval)
-
-
-def _loop():
-    _loop_remote()
 
 
 def start_pipeline():

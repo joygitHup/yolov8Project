@@ -304,6 +304,12 @@ class StreamManager:
 
         rtsp = (getattr(camera, "rtsp", None) or "").strip()
         if mtx.is_local_mediamtx_rtsp(rtsp):
+            try:
+                from apps.streaming import preroll
+
+                preroll.ensure(path, mtx.mtx_rtsp_url(path) or rtsp)
+            except Exception:
+                logger.exception("preroll start-at-local failed path=%s", path)
             return mtx.wait_hls_ready(path, timeout=min(2.0, max(0.4, wait)))
         return self._restream_rtsp(path, rtsp, wait=wait)
 
@@ -328,6 +334,12 @@ class StreamManager:
                     self._publishers[path] = proc
                     self._publisher_src[path] = src
                     logger.info("mtx restream started path=%s src=%s pid=%s", path, src, proc.pid)
+                    try:
+                        from apps.streaming import preroll
+
+                        preroll.ensure(path, dst)
+                    except Exception:
+                        logger.exception("preroll start-at-restream failed path=%s", path)
                 except Exception:
                     logger.exception("mtx restream failed path=%s src=%s", path, src)
                     return False

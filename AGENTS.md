@@ -11,13 +11,13 @@
 
 ### 后端
 - Django + Django REST Framework、Channels（WebSocket，Redis 层）、PostgreSQL（`USE_SQLITE=1` 可回退）
-- JWT 认证（`apps.accounts`）
+- JWT 认证（`apps.accounts`，httpOnly Cookie `yolov8_access`，响应体不返回 token）
 - Redis（Docker `:6379` / DB `2`）告警去重、任务队列、推理帧缓存
 - MinIO（S3 API `:9000`，控制台 `:9001`，Bucket `yolov8pro`）抓拍、短视频、飞轮数据集
 
 ### 推理 / 流媒体
 - **yolo-service**：FastAPI，RTSP 拉流 → Ultralytics YOLOv8 → `POST /api/inference/ingest`
-- **MediaMTX**：RTSP `:8554`、HLS `:8888`（前端经 Vite `/mtx-hls` 代理）
+- **MediaMTX**：RTSP `:8554`、HLS 仅本机 `127.0.0.1:8888`；浏览器经 Django `/media/mtx`（需登录 Cookie）拉取
 
 ## 目录结构
 
@@ -80,11 +80,15 @@ pnpm run dev
 | `YOLO_WEIGHTS` | 默认权重路径 | （见 systemcfg defaults） |
 | `DEMO_RTSP_PUBLISH` | runtime 自动推演示流 | `0` |
 | `MEDIAMTX_BIN` | mediamtx.exe 路径 | 脚本内猜测 |
-| `INGEST_TOKEN` | ingest 可选鉴权 | 空 |
+| `INGEST_TOKEN` | ingest 鉴权（空则写入 `backend/data/.ingest_token`） | 自动生成 |
+| `DJANGO_DEBUG` | Django DEBUG | `0` |
+| `DJANGO_ALLOWED_HOSTS` | 允许的 Host | `localhost,127.0.0.1,[::1]` |
+| `DJANGO_CORS_ORIGINS` | 额外 CORS 源（逗号分隔） | 仅本机 localhost / 127.0.0.1 |
 | `REDIS_URL` | Redis（Docker，逻辑库 2） | `redis://127.0.0.1:6379/2` |
 | `MINIO_ENDPOINT` | MinIO S3 API（控制台为 `:9001`） | `127.0.0.1:9000` |
 | `MINIO_BUCKET` | 证据 Bucket | `yolov8pro` |
-| `MINIO_ACCESS_KEY` / `SECRET` | MinIO 账号 | 本机容器 `Admin` / `Admin123` |
+| `MINIO_ACCESS_KEY` / `SECRET` | MinIO 账号 | **必填环境变量**（仓库不写默认口令） |
+| `POSTGRES_PASSWORD` | Postgres 密码 | **必填环境变量**（compose 无此变量会拒绝启动） |
 | `EVIDENCE_BACKEND` | `minio` / `local` | `minio` |
 | `JOBS_EMBEDDED` | runtime 进程内消费队列 | runtime=`1`，Django API=`0` |
 | `JOBS_BACKEND` | 任务队列 `rabbitmq` / `redis` | `rabbitmq` |
@@ -116,7 +120,7 @@ ffmpeg -re -stream_loop -1 -i vide02.mp4 -c:v copy -an -f rtsp -rtsp_transport t
 - **inference** — `POST /api/inference/ingest`（兼容回退；主路径是 Kafka `yolov8.detect.frames`）
 - **streaming** — 预览流状态
 
-yolo-service（默认 `:8090`）：
+yolo-service（默认仅监听 `127.0.0.1:8090`，请求头 `X-Ingest-Token`）：
 
 - `GET /health`、`GET /cameras`
 - `POST /cameras/start|stop`、`POST /cameras/stop-all`
@@ -161,7 +165,7 @@ yolo-service 按 RTSP URL 共享拉流与推理，只回调多次。
 
 ### Redis / MinIO / MQ？
 使用本机已有 Docker Redis（`:6379`，逻辑库 `/2`，不要在 Windows 再装一份）。MinIO 控制台 `:9001`，对象 API `:9000`，Bucket `yolov8pro`。
-检测事件走 Kafka `yolov8.detect.frames`（无 JPEG），由 **runtime** 消费并写 Redis 框/图；告警落库后发 `yolov8.alerts.created`。抓拍/短视频/通知/微调走 **RabbitMQ**（`evidence` / `notify` / `flywheel`），同样由 runtime 消费。`POST /api/inference/ingest` 仅在 Kafka 不可用时由 yolo 回退。单进程兜底：`DJANGO_EMBEDDED_RUNTIME=1`。需要时：`docker compose up -d rabbitmq kafka`。
+检测事件走 Kafka `yolov8.detect.frames`（无 JPEG，带 HMAC `sig`），由 **runtime** 消费并写 Redis 框/图；告警落库后发 `yolov8.alerts.created`。抓拍/短视频/通知/微调走 **RabbitMQ**（`evidence` / `notify` / `flywheel`），同样由 runtime 消费。`POST /api/inference/ingest` 仅在 Kafka 不可用时由 yolo 回退。单进程兜底：`DJANGO_EMBEDDED_RUNTIME=1`。本机已有 Rabbit/Kafka 时不要 `compose up` 这两项；空机器才用 `docker compose --profile mq up -d rabbitmq kafka`。
 
 ### 现场数据集（飞轮）？
 检测参数页开关采集。告警帧 + 不确定帧写入 `yolov8pro/flywheel/dataset/auto/{images,labels}`。
@@ -173,5 +177,6 @@ yolo-service 按 RTSP URL 共享拉流与推理，只回调多次。
 1. 前端请求用 `src/utils/request.ts`
 2. 用户状态 Pinia `stores/user.ts`；路由守卫 `router/index.ts`
 3. 检测参数里的 **模型权重** 可保存并热加载 remote 服务
-4. Vite 代理 `/api`、`/media`、`/mtx-hls`
-5. 详细微服务说明见 `yolo-service/README.md`
+4. Vite 代理 `/api`、`/media`、`/ws`（HLS 走 `/media/mtx`，不再代理 MediaMTX）
+5. 登录 JWT 只放 httpOnly Cookie `yolov8_access`，不要写 localStorage
+6. 详细微服务说明见 `yolo-service/README.md`

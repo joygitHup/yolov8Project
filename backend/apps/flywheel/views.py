@@ -4,7 +4,7 @@ from django.utils import timezone
 from rest_framework.exceptions import NotFound, ValidationError
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
-from rest_framework.views import APIView
+from apps.common.apiview import APIView
 
 from apps.common import storage
 from apps.common.permissions import IsAdminOrOperator

@@ -1,7 +1,7 @@
 from rest_framework.exceptions import NotFound, ValidationError
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
-from rest_framework.views import APIView
+from apps.common.apiview import APIView
 from django.db.models import Q
 from apps.common.pagination import paginate_qs
 from apps.common.permissions import IsAdminOrOperator
