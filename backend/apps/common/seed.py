@@ -61,7 +61,9 @@ def seed_if_empty():
             name=item["name"],
             location=item["location"],
             ip=item["ip"],
-            rtsp=f"rtsp://{item['ip']}/stream",
+            # Offline seed cams keep empty RTSP so enabling them won't spawn dead workers.
+            # Online seed IPs are placeholders; runtime will not remap them to mystream.
+            rtsp="" if item["status"] == "offline" else f"rtsp://{item['ip']}/stream",
             type=item["type"],
             username="admin",
             password="admin123",

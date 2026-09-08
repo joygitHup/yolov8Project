@@ -10,6 +10,7 @@ import urllib.parse
 import urllib.request
 from email.mime.text import MIMEText
 
+from apps.common.jobs import QUEUE_NOTIFY, enqueue, register
 from apps.systemcfg.models import NotificationLog
 from apps.systemcfg.services import get_section
 
@@ -137,6 +138,19 @@ def send_channel(channel, text, kind="test", alert=None):
 
 
 def dispatch(alert):
+    notification = get_section("notification")
+    if notification.get("enabled") is False:
+        return
+    enqueue(QUEUE_NOTIFY, "notify.alert", {"alertId": int(alert.id)})
+
+
+@register("notify.alert")
+def job_notify_alert(payload: dict):
+    from apps.alerts.models import Alert
+
+    alert = Alert.objects.filter(pk=int(payload.get("alertId") or 0)).first()
+    if not alert:
+        return
     notification = get_section("notification")
     if notification.get("enabled") is False:
         return

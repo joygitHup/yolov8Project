@@ -7,6 +7,7 @@
         <span v-if="!appStore.sidebarCollapsed" class="logo-text">{{ appStore.systemTitle }}</span>
       </div>
       <el-menu
+        :key="activeMenu"
         :default-active="activeMenu"
         :collapse="appStore.sidebarCollapsed"
         :collapse-transition="false"
@@ -21,7 +22,6 @@
             <el-icon><component :is="item.icon" /></el-icon>
             <template #title>
               <span>{{ item.title }}</span>
-              <el-badge v-if="item.badge && unhandledCount > 0" :value="unhandledCount" class="menu-badge" />
             </template>
           </el-menu-item>
         </template>
@@ -114,18 +114,24 @@ const menuItems = computed(() => {
     { path: '/overview', title: '总览分析', icon: 'DataAnalysis', hidden: false },
     { path: '/monitor', title: '实时监控', icon: 'VideoCamera', hidden: false },
     { path: '/cameras', title: '摄像头管理', icon: 'Camera', hidden: false },
-    { path: '/alerts', title: '报警中心', icon: 'Bell', hidden: false, badge: true },
-    { path: '/config', title: '系统配置', icon: 'Setting', hidden: false }
+    { path: '/alerts', title: '报警中心', icon: 'Bell', hidden: false },
+    { path: '/flywheel', title: '标注台', icon: 'EditPen', hidden: false },
+    { path: '/config', title: '系统配置', icon: 'Tools', hidden: false }
   ]
 
   // 根据角色过滤
   if (userStore.isViewer) {
-    return items.filter(i => !['/config'].includes(i.path))
+    return items.filter(i => !['/config', '/flywheel'].includes(i.path))
   }
   return items
 })
 
-const activeMenu = computed(() => route.path)
+const activeMenu = computed(() => {
+  if (route.path.startsWith('/flywheel')) return '/flywheel'
+  if (route.path.startsWith('/config')) return '/config'
+  if (route.path.startsWith('/alerts')) return '/alerts'
+  return route.path
+})
 
 const breadcrumbs = computed(() => {
   const matched = route.matched.filter(m => m.meta && m.meta.title && !m.meta.hidden)
@@ -256,10 +262,6 @@ onUnmounted(() => {
 
 .sidebar-menu :deep(.el-menu-item.is-active) {
   background: #1677ff !important;
-}
-
-.menu-badge {
-  margin-left: auto;
 }
 
 .main-wrapper {

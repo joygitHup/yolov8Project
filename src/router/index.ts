@@ -55,7 +55,7 @@ const routes: RouteRecordRaw[] = [
         path: 'config',
         name: 'Config',
         component: () => import('@/views/config/index.vue'),
-        meta: { title: '系统配置', icon: 'Setting', requiresAuth: true, roles: ['admin', 'operator'] }
+        meta: { title: '系统配置', icon: 'Tools', requiresAuth: true, roles: ['admin', 'operator'] }
       },
       {
         path: 'config/users',
@@ -80,6 +80,16 @@ const routes: RouteRecordRaw[] = [
         name: 'NotificationConfig',
         component: () => import('@/views/config/notification.vue'),
         meta: { title: '通知配置', icon: 'Message', requiresAuth: true, roles: ['admin'], hidden: true }
+      },
+      {
+        path: 'config/flywheel',
+        redirect: '/flywheel'
+      },
+      {
+        path: 'flywheel',
+        name: 'FlywheelDesk',
+        component: () => import('@/views/flywheel/index.vue'),
+        meta: { title: '标注台', icon: 'EditPen', requiresAuth: true, roles: ['admin', 'operator'] }
       },
       {
         path: 'profile',

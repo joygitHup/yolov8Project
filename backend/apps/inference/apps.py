@@ -1,5 +1,6 @@
 import os
 import sys
+import threading
 from django.apps import AppConfig
 
 
@@ -9,9 +10,16 @@ class InferenceConfig(AppConfig):
     label = "inference"
 
     def ready(self):
-        if "migrate" in sys.argv or "makemigrations" in sys.argv:
+        from apps.common.process import django_embeds_runtime, is_mgmt_skip
+
+        if is_mgmt_skip() or not django_embeds_runtime():
             return
-        if os.environ.get("RUN_MAIN") != "true":
+        using_reloader = "runserver" in sys.argv and "--noreload" not in sys.argv
+        if using_reloader and os.environ.get("RUN_MAIN") != "true":
             return
-        from apps.inference.pipeline import start_pipeline
-        start_pipeline()
+
+        def _start():
+            from apps.inference.pipeline import start_pipeline
+            start_pipeline()
+
+        threading.Timer(1.0, _start).start()

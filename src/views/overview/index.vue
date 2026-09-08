@@ -1,6 +1,6 @@
 <template>
   <div class="overview-page">
-    <!-- 统计卡片 -->
+    <!-- 统计卡片：字段统一走 summary.cameras / summary.alerts -->
     <el-row :gutter="16" class="stat-row">
       <el-col :span="6">
         <el-card class="stat-card total-card" shadow="hover">
@@ -8,12 +8,12 @@
             <el-icon :size="28"><VideoCamera /></el-icon>
           </div>
           <div class="stat-content">
-            <div class="stat-num">{{ stats.cameras?.total || 0 }}</div>
+            <div class="stat-num">{{ summary.cameras.total }}</div>
             <div class="stat-label">接入摄像头</div>
           </div>
           <div class="stat-foot">
-            <el-tag :type="stats.cameras?.online ? 'success' : 'danger'" size="small">
-              在线 {{ stats.cameras?.online || 0 }}
+            <el-tag :type="summary.cameras.online ? 'success' : 'danger'" size="small">
+              在线 {{ summary.cameras.online }}
             </el-tag>
           </div>
         </el-card>
@@ -24,11 +24,11 @@
             <el-icon :size="28"><Bell /></el-icon>
           </div>
           <div class="stat-content">
-            <div class="stat-num">{{ stats.alerts?.today || 0 }}</div>
+            <div class="stat-num">{{ summary.alerts.today }}</div>
             <div class="stat-label">今日告警</div>
           </div>
           <div class="stat-foot">
-            <el-tag type="danger" size="small">待处理 {{ stats.alerts?.unhandled || 0 }}</el-tag>
+            <el-tag type="danger" size="small">待处理 {{ summary.alerts.unhandled }}</el-tag>
           </div>
         </el-card>
       </el-col>
@@ -38,11 +38,13 @@
             <el-icon :size="28"><DataLine /></el-icon>
           </div>
           <div class="stat-content">
-            <div class="stat-num">{{ stats.week || 0 }}</div>
+            <div class="stat-num">{{ summary.alerts.week }}</div>
             <div class="stat-label">本周告警</div>
           </div>
           <div class="stat-foot">
-            <span class="trend-text">较上周 +12%</span>
+            <span class="trend-text" :class="{ up: weekChangeRate > 0, down: weekChangeRate < 0 }">
+              较上周 {{ weekChangeText }}
+            </span>
           </div>
         </el-card>
       </el-col>
@@ -52,11 +54,11 @@
             <el-icon :size="28"><CircleCheck /></el-icon>
           </div>
           <div class="stat-content">
-            <div class="stat-num">{{ resolvedRate }}%</div>
+            <div class="stat-num">{{ summary.alerts.resolvedRate }}%</div>
             <div class="stat-label">处置率</div>
           </div>
           <div class="stat-foot">
-            <el-tag type="success" size="small">已处置 {{ stats.statusCounts?.resolved || 0 }}</el-tag>
+            <el-tag type="success" size="small">已处置 {{ summary.alerts.resolved }}</el-tag>
           </div>
         </el-card>
       </el-col>
@@ -65,11 +67,11 @@
     <!-- 图表区 -->
     <el-row :gutter="16" class="chart-row">
       <el-col :span="16">
-        <el-card class="chart-card">
+        <el-card class="chart-card" v-loading="loading">
           <template #header>
             <div class="card-header">
               <span>告警趋势分析</span>
-              <el-radio-group v-model="trendPeriod" size="small" @change="loadTrendData">
+              <el-radio-group v-model="trendPeriod" size="small" @change="onPeriodChange">
                 <el-radio-button value="day">今日</el-radio-button>
                 <el-radio-button value="week">近7天</el-radio-button>
                 <el-radio-button value="month">近30天</el-radio-button>
@@ -89,7 +91,6 @@
       </el-col>
     </el-row>
 
-    <!-- 第二行 -->
     <el-row :gutter="16" class="chart-row">
       <el-col :span="12">
         <el-card class="chart-card">
@@ -102,10 +103,12 @@
       <el-col :span="12">
         <el-card class="chart-card">
           <template #header>
-            <span>最近告警</span>
-            <el-button type="primary" link size="small" @click="$router.push('/alerts')">
-              查看全部
-            </el-button>
+            <div class="card-header">
+              <span>最近告警</span>
+              <el-button type="primary" link size="small" @click="$router.push('/alerts')">
+                查看全部
+              </el-button>
+            </div>
           </template>
           <el-table :data="recentAlerts" style="width: 100%" size="small" empty-text="暂无告警">
             <el-table-column prop="cameraName" label="摄像头" width="120" />
@@ -134,7 +137,6 @@
       </el-col>
     </el-row>
 
-    <!-- 摄像头告警分布 -->
     <el-row :gutter="16" class="chart-row">
       <el-col :span="24">
         <el-card class="chart-card">
@@ -151,16 +153,65 @@
 <script setup lang="ts">
 import { ref, reactive, computed, onMounted, onUnmounted, nextTick } from 'vue'
 import * as echarts from 'echarts'
-import { alertApi, dashboardApi, configApi } from '@/api'
+import { dashboardApi } from '@/api'
 import dayjs from 'dayjs'
 
-const trendPeriod = ref('day')
-const stats = reactive<any>({})
+type TrendPeriod = 'day' | 'week' | 'month'
+
+interface SummaryState {
+  cameras: {
+    total: number
+    online: number
+    offline: number
+    enabled: number
+    onlineRate: number
+    rate?: string
+  }
+  alerts: {
+    today: number
+    week: number
+    lastWeek: number
+    weekChangeRate: number
+    total: number
+    unhandled: number
+    processing: number
+    resolved: number
+    resolvedRate: number
+  }
+  statusCounts: { unhandled: number; processing: number; resolved: number }
+  typeCounts: { intrusion: number; parking: number; fire: number }
+  levelCounts: { high: number; medium: number; low: number }
+}
+
+const emptySummary = (): SummaryState => ({
+  cameras: { total: 0, online: 0, offline: 0, enabled: 0, onlineRate: 0 },
+  alerts: {
+    today: 0,
+    week: 0,
+    lastWeek: 0,
+    weekChangeRate: 0,
+    total: 0,
+    unhandled: 0,
+    processing: 0,
+    resolved: 0,
+    resolvedRate: 0
+  },
+  statusCounts: { unhandled: 0, processing: 0, resolved: 0 },
+  typeCounts: { intrusion: 0, parking: 0, fire: 0 },
+  levelCounts: { high: 0, medium: 0, low: 0 }
+})
+
+const loading = ref(false)
+const trendPeriod = ref<TrendPeriod>('day')
+const summary = reactive<SummaryState>(emptySummary())
 const recentAlerts = ref<any[]>([])
-const resolvedRate = computed(() => {
-  const total = stats.total || 1
-  const resolved = stats.statusCounts?.resolved || 0
-  return ((resolved / total) * 100).toFixed(1)
+
+const weekChangeRate = computed(() => Number(summary.alerts.weekChangeRate || 0))
+const weekChangeText = computed(() => {
+  const rate = weekChangeRate.value
+  if (rate === 0) return '持平'
+  const sign = rate > 0 ? '+' : ''
+  return `${sign}${rate}%`
 })
 
 const trendChartRef = ref<HTMLElement>()
@@ -197,74 +248,82 @@ function formatTime(time: string) {
   return dayjs(time).format('MM-DD HH:mm:ss')
 }
 
-async function loadStats() {
-  try {
-    const res: any = await alertApi.getStats()
-    Object.assign(stats, res)
-  } catch (e) {}
-}
-
-async function loadRecentAlerts() {
-  try {
-    const res: any = await alertApi.getList({ page: 1, pageSize: 8 })
-    recentAlerts.value = res.list || []
-  } catch (e) {}
+function applySummary(payload: any) {
+  const src = payload?.summary || payload || {}
+  const cameras = src.cameras || {}
+  const alerts = src.alerts || {}
+  Object.assign(summary.cameras, {
+    total: Number(cameras.total || 0),
+    online: Number(cameras.online || 0),
+    offline: Number(cameras.offline || 0),
+    enabled: Number(cameras.enabled || 0),
+    onlineRate: Number(cameras.onlineRate ?? cameras.rate ?? 0),
+    rate: cameras.rate
+  })
+  Object.assign(summary.alerts, {
+    today: Number(alerts.today || 0),
+    week: Number(alerts.week || 0),
+    lastWeek: Number(alerts.lastWeek || 0),
+    weekChangeRate: Number(alerts.weekChangeRate || 0),
+    total: Number(alerts.total || 0),
+    unhandled: Number(alerts.unhandled || 0),
+    processing: Number(alerts.processing || 0),
+    resolved: Number(alerts.resolved || 0),
+    resolvedRate: Number(alerts.resolvedRate || 0)
+  })
+  Object.assign(summary.statusCounts, src.statusCounts || {})
+  Object.assign(summary.typeCounts, src.typeCounts || {})
+  Object.assign(summary.levelCounts, src.levelCounts || {})
 }
 
 function initCharts() {
-  if (trendChartRef.value) {
-    trendChart = echarts.init(trendChartRef.value)
-  }
-  if (typeChartRef.value) {
-    typeChart = echarts.init(typeChartRef.value)
-  }
-  if (levelChartRef.value) {
-    levelChart = echarts.init(levelChartRef.value)
-  }
-  if (rankChartRef.value) {
-    rankChart = echarts.init(rankChartRef.value)
-  }
+  if (trendChartRef.value) trendChart = echarts.init(trendChartRef.value)
+  if (typeChartRef.value) typeChart = echarts.init(typeChartRef.value)
+  if (levelChartRef.value) levelChart = echarts.init(levelChartRef.value)
+  if (rankChartRef.value) rankChart = echarts.init(rankChartRef.value)
 }
 
 function updateTrendChart(data: any[]) {
   if (!trendChart) return
-  const option: any = {
+  const labels = data.map((d) => d.label || d.hour || d.date)
+  trendChart.setOption({
     tooltip: { trigger: 'axis' },
     legend: { data: ['区域入侵', '违停占道', '火灾隐患'] },
     grid: { left: 40, right: 20, top: 40, bottom: 30 },
-    xAxis: {
-      type: 'category',
-      data: data.map(d => d.hour || d.date),
-      boundaryGap: false
-    },
+    xAxis: { type: 'category', data: labels, boundaryGap: false },
     yAxis: { type: 'value' },
     series: [
       {
-        name: '区域入侵', type: 'line', smooth: true,
-        data: data.map(d => d.intrusion),
+        name: '区域入侵',
+        type: 'line',
+        smooth: true,
+        data: data.map((d) => d.intrusion || 0),
         itemStyle: { color: '#f5222d' },
         areaStyle: { opacity: 0.1 }
       },
       {
-        name: '违停占道', type: 'line', smooth: true,
-        data: data.map(d => d.parking),
+        name: '违停占道',
+        type: 'line',
+        smooth: true,
+        data: data.map((d) => d.parking || 0),
         itemStyle: { color: '#faad14' },
         areaStyle: { opacity: 0.1 }
       },
       {
-        name: '火灾隐患', type: 'line', smooth: true,
-        data: data.map(d => d.fire),
+        name: '火灾隐患',
+        type: 'line',
+        smooth: true,
+        data: data.map((d) => d.fire || 0),
         itemStyle: { color: '#fa541c' },
         areaStyle: { opacity: 0.1 }
       }
     ]
-  }
-  trendChart.setOption(option)
+  })
 }
 
 function updateTypeChart(data: any[]) {
   if (!typeChart) return
-  const option: any = {
+  typeChart.setOption({
     tooltip: { trigger: 'item' },
     legend: { orient: 'vertical', right: 10, top: 'center' },
     series: [{
@@ -273,29 +332,32 @@ function updateTypeChart(data: any[]) {
       center: ['35%', '50%'],
       itemStyle: { borderRadius: 4, borderColor: '#fff', borderWidth: 2 },
       label: { show: false },
-      data: data.map((d: any) => ({ value: d.value, name: d.name, itemStyle: { color: d.color } }))
+      data: data.map((d: any) => ({
+        value: d.value,
+        name: d.name,
+        itemStyle: { color: d.color }
+      }))
     }]
-  }
-  typeChart.setOption(option)
+  })
 }
 
 function updateLevelChart(data: any[]) {
   if (!levelChart) return
-  const option: any = {
+  levelChart.setOption({
     tooltip: { trigger: 'item' },
     legend: { bottom: 0 },
     series: [{
       type: 'pie',
       radius: '60%',
       itemStyle: { borderRadius: 6 },
-      label: {
-        formatter: '{b}\n{d}%',
-        fontSize: 12
-      },
-      data: data.map((d: any) => ({ value: d.value, name: d.name, itemStyle: { color: d.color } }))
+      label: { formatter: '{b}\n{d}%', fontSize: 12 },
+      data: data.map((d: any) => ({
+        value: d.value,
+        name: d.name,
+        itemStyle: { color: d.color }
+      }))
     }]
-  }
-  levelChart.setOption(option)
+  })
 }
 
 function updateRankChart(data: any[]) {
@@ -303,8 +365,7 @@ function updateRankChart(data: any[]) {
   const names = data.map((d: any) => d.name).reverse()
   const values = data.map((d: any) => d.total).reverse()
   const highValues = data.map((d: any) => d.high).reverse()
-
-  const option: any = {
+  rankChart.setOption({
     tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' } },
     legend: { data: ['总告警', '高危告警'], right: 20 },
     grid: { left: 120, right: 40, top: 40, bottom: 20 },
@@ -312,48 +373,46 @@ function updateRankChart(data: any[]) {
     yAxis: { type: 'category', data: names },
     series: [
       {
-        name: '总告警', type: 'bar',
+        name: '总告警',
+        type: 'bar',
         data: values,
         barWidth: 14,
         itemStyle: { color: '#1677ff', borderRadius: [0, 4, 4, 0] }
       },
       {
-        name: '高危告警', type: 'bar',
+        name: '高危告警',
+        type: 'bar',
         data: highValues,
         barWidth: 14,
         itemStyle: { color: '#f5222d', borderRadius: [0, 4, 4, 0] }
       }
     ]
+  })
+}
+
+function applyAnalysis(res: any) {
+  applySummary(res)
+  recentAlerts.value = res.recentAlerts || []
+  updateTrendChart(res.alertTrend || [])
+  updateTypeChart(res.alertTypes || [])
+  updateLevelChart(res.alertLevels || [])
+  updateRankChart(res.cameraRank || [])
+}
+
+async function loadAnalysis(period: TrendPeriod = trendPeriod.value) {
+  loading.value = true
+  try {
+    const res: any = await dashboardApi.getAnalysis({ period })
+    applyAnalysis(res)
+  } catch {
+    // ignore — request interceptor already toasts
+  } finally {
+    loading.value = false
   }
-  rankChart.setOption(option)
 }
 
-async function loadTrendData() {
-  try {
-    const res: any = await dashboardApi.getAlertTrend({ period: trendPeriod.value })
-    updateTrendChart(res)
-  } catch (e) {}
-}
-
-async function loadTypeData() {
-  try {
-    const res: any = await dashboardApi.getAlertTypes()
-    updateTypeChart(res)
-  } catch (e) {}
-}
-
-async function loadLevelData() {
-  try {
-    const res: any = await dashboardApi.getAlertLevels()
-    updateLevelChart(res)
-  } catch (e) {}
-}
-
-async function loadRankData() {
-  try {
-    const res: any = await dashboardApi.getCameraRank()
-    updateRankChart(res)
-  } catch (e) {}
+async function onPeriodChange(period: TrendPeriod) {
+  await loadAnalysis(period)
 }
 
 function handleResize() {
@@ -366,14 +425,7 @@ function handleResize() {
 onMounted(async () => {
   await nextTick()
   initCharts()
-  await Promise.all([
-    loadStats(),
-    loadRecentAlerts(),
-    loadTrendData(),
-    loadTypeData(),
-    loadLevelData(),
-    loadRankData()
-  ])
+  await loadAnalysis('day')
   window.addEventListener('resize', handleResize)
 })
 
@@ -456,7 +508,15 @@ onUnmounted(() => {
 
 .trend-text {
   font-size: 12px;
+  color: #6b7280;
+}
+
+.trend-text.up {
   color: #f5222d;
+}
+
+.trend-text.down {
+  color: #52c41a;
 }
 
 .chart-row {

@@ -10,8 +10,8 @@ _TYPE_TEXT = {"intrusion": "区域入侵", "parking": "违停占道", "fire": "�
 _LEVEL_TEXT = {"high": "高危", "medium": "中危", "low": "低危"}
 _STATUS_TEXT = {"unhandled": "待处理", "processing": "处理中", "resolved": "已处理"}
 _LABEL_TEXT = {
-    "person": "人", "car": "轿车", "truck": "卡车", "fire": "火焰",
-    "smoke": "烟雾", "bicycle": "自行车", "motorcycle": "摩托车",
+    "person": "人", "car": "轿车", "truck": "卡车", "bus": "公交车",
+    "fire": "火焰", "smoke": "烟雾", "bicycle": "自行车", "motorcycle": "摩托车",
 }
 _BOX_COLOR = {
     "person": "#52c41a", "car": "#3b82f6", "truck": "#8b5cf6",
@@ -46,17 +46,54 @@ def iso(value):
 def serialize_camera(camera):
     if not camera:
         return None
+    from apps.cameras.health import camera_health
+
+    health = camera_health(camera, probe_hls=False)
     return {
         "id": camera.id,
         "name": camera.name,
-        "location": camera.location,
-        "ip": camera.ip,
+        "location": camera.location or "",
+        "ip": camera.ip or "",
         "type": camera.type,
         "status": camera.status,
-        "enabled": camera.enabled,
-        "resolution": camera.resolution,
-        "rtsp": camera.rtsp,
+        "enabled": bool(camera.enabled),
+        "live": bool(health.get("live")),
+        "hlsReady": bool(health.get("hlsReady")),
+        "resolution": camera.resolution or "1920x1080",
+        "rtsp": camera.rtsp or "",
     }
+
+
+def normalize_detection_boxes(raw):
+    """
+    Canonical detection box:
+      { id, label, confidence, bbox: { x, y, w, h } }  — coords in 0~1
+    Accepts legacy flat {x,y,w,h,label,confidence} and nested bbox forms.
+    """
+    out = []
+    for idx, item in enumerate(raw or []):
+        if not isinstance(item, dict):
+            continue
+        bbox = item.get("bbox") if isinstance(item.get("bbox"), dict) else item
+        if not isinstance(bbox, dict):
+            continue
+        conf = item.get("confidence", bbox.get("confidence"))
+        try:
+            confidence = float(conf if conf is not None else 0)
+        except (TypeError, ValueError):
+            confidence = 0.0
+        out.append({
+            "id": item.get("id") if item.get("id") is not None else idx + 1,
+            "label": str(item.get("label") or bbox.get("label") or "object"),
+            "confidence": confidence,
+            "bbox": {
+                "x": float(bbox.get("x") or 0),
+                "y": float(bbox.get("y") or 0),
+                "w": float(bbox.get("w") or 0),
+                "h": float(bbox.get("h") or 0),
+            },
+        })
+    return out
 
 
 def serialize_action(action):
@@ -88,32 +125,37 @@ def serialize_ticket(ticket):
 
 def build_clip(alert):
     triggered = alert.triggered_at or timezone.now()
-    start = triggered - timedelta(seconds=5)
-    end = triggered + timedelta(seconds=10)
+    start = triggered - timedelta(seconds=0)
+    end = triggered + timedelta(seconds=8)
+    video = (alert.video_url or "").strip()
+    real = video.startswith("/media/alerts/")
     return {
-        "available": False,
-        "duration": 15,
+        "available": real,
+        "url": video if real else "",
+        "duration": 8 if real else 15,
         "startedAt": iso(start),
         "endedAt": iso(end),
-        "message": "暂未接入录像文件，已根据告警时间生成 15 秒片段窗口",
+        "message": (
+            "告警触发后录制的现场短视频"
+            if real
+            else "视频片段采集中（约数秒到十几秒，完成后自动刷新）"
+        ),
     }
 
 
 def _boxes(alert):
-    boxes = []
-    for item in alert.detection_boxes or []:
-        bbox = item.get("bbox") if isinstance(item, dict) and "bbox" in item else item
-        if not isinstance(bbox, dict):
-            continue
-        boxes.append({
-            "x": float(bbox.get("x") or 0),
-            "y": float(bbox.get("y") or 0),
-            "w": float(bbox.get("w") or 0),
-            "h": float(bbox.get("h") or 0),
-            "label": item.get("label") or bbox.get("label") or "object",
-            "confidence": float(item.get("confidence") or bbox.get("confidence") or 0),
-        })
-    return boxes
+    """Flatten canonical boxes for SVG drawing."""
+    return [
+        {
+            "x": item["bbox"]["x"],
+            "y": item["bbox"]["y"],
+            "w": item["bbox"]["w"],
+            "h": item["bbox"]["h"],
+            "label": item["label"],
+            "confidence": item["confidence"],
+        }
+        for item in normalize_detection_boxes(alert.detection_boxes)
+    ]
 
 
 def build_evidence_svg(alert, width=1280, height=720):

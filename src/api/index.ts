@@ -29,7 +29,8 @@ export const cameraApi = {
   update: (id: number, data: any) => put(`/cameras/${id}`, data),
   delete: (id: number) => del(`/cameras/${id}`),
   batchDelete: (ids: number[]) => post('/cameras/batch-delete', { ids }),
-  toggle: (id: number) => post(`/cameras/${id}/toggle`),
+  toggle: (id: number, data?: { enabled?: boolean }) =>
+    post(`/cameras/${id}/toggle`, data || {}),
   ptz: (id: number, data: { direction: string; speed?: number }) =>
     post(`/cameras/${id}/ptz`, data),
   getPtz: (id: number) => get(`/cameras/${id}/ptz`),
@@ -39,7 +40,25 @@ export const cameraApi = {
   getSnapshots: (id: number) => get(`/cameras/${id}/snapshot`),
   record: (id: number, data?: { action?: 'start' | 'stop' | 'toggle' }) =>
     post(`/cameras/${id}/record`, data || { action: 'toggle' }),
-  getRecord: (id: number) => get(`/cameras/${id}/record`)
+  getRecord: (id: number) => get(`/cameras/${id}/record`),
+  startStream: (id: number, data?: { preferRtsp?: boolean; wait?: boolean }) =>
+    post(`/cameras/${id}/stream/start`, data || { preferRtsp: true, wait: false }, { timeout: 15000 }),
+  stopStream: (id: number) => post(`/cameras/${id}/stream/stop`),
+  getStream: (id: number) => get(`/cameras/${id}/stream`)
+}
+
+/** Poll stream status written by runtime to Redis (API does not wait on ffmpeg). */
+export async function waitStreamReady(id: number, first?: any) {
+  const ready = (row: any) => !!(row?.hlsUrl && (row.playlistReady || row.hlsReady))
+  if (ready(first)) return first
+  const deadline = Date.now() + 18000
+  let last = first
+  while (Date.now() < deadline) {
+    await new Promise((r) => setTimeout(r, 700))
+    last = await cameraApi.getStream(id)
+    if (ready(last)) return last
+  }
+  return last
 }
 
 // ============== 告警接口 ==============
@@ -80,11 +99,34 @@ export const configApi = {
   toggleStrategy: (id: number, data?: { enabled?: boolean }) =>
     post(`/config/strategies/${id}/toggle`, data || {}),
 
-  getSystemInfo: () => get('/config/system/info')
+  getSystemInfo: () => get('/config/system/info'),
+
+  getFlywheel: () => get('/config/flywheel'),
+  updateFlywheel: (data: any) => put('/config/flywheel', data),
+  getFlywheelStats: () => get('/config/flywheel/stats'),
+  getFlywheelSamples: (params?: any) => get('/config/flywheel/samples', params),
+  getFlywheelSample: (id: number) => get(`/config/flywheel/samples/${id}`),
+  getFlywheelSampleNext: (params?: { afterId?: number }) =>
+    get('/config/flywheel/samples/next', params),
+  getFlywheelSampleImage: (id: number) =>
+    get(`/config/flywheel/samples/${id}/image`, undefined, { responseType: 'blob' }),
+  updateFlywheelSample: (id: number, data: { boxes: any[] }) =>
+    put(`/config/flywheel/samples/${id}`, data),
+  approveFlywheelSample: (id: number, data?: { boxes?: any[] }) =>
+    post(`/config/flywheel/samples/${id}/approve`, data || {}),
+  discardFlywheelSample: (id: number) => post(`/config/flywheel/samples/${id}/discard`, {}),
+  getFlywheelTrain: () => get('/config/flywheel/train'),
+  startFlywheelTrain: () => post('/config/flywheel/train', {}),
+  promoteFlywheelTrain: (id: number) => post(`/config/flywheel/train/${id}/promote`, {}),
+  rollbackFlywheelTrain: (id: number) => post(`/config/flywheel/train/${id}/rollback`, {})
 }
 
 // ============== 大屏接口 ==============
 export const dashboardApi = {
+  /** 总览分析聚合 period=day|week|month */
+  getAnalysis: (params?: { period?: 'day' | 'week' | 'month' }) =>
+    get('/dashboard/analysis', params),
+  getScreen: () => get('/dashboard/screen'),
   getOverview: () => get('/dashboard/overview'),
   getAlertTrend: (params?: any) => get('/dashboard/alert-trend', params),
   getAlertTypes: () => get('/dashboard/alert-types'),

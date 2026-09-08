@@ -2,6 +2,8 @@ import os
 from django.core.asgi import get_asgi_application
 from channels.routing import ProtocolTypeRouter, URLRouter
 
+os.environ.setdefault("ASGI_THREADS", "16")
+os.environ.setdefault("DJANGO_ASGI_THREADS", "16")
 os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings")
 django_asgi = get_asgi_application()
 

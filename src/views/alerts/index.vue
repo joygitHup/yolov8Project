@@ -5,43 +5,59 @@
         <div class="card-header">
           <span class="header-title">报警中心</span>
           <div class="header-actions">
-            <el-button :icon="Refresh" @click="loadData">刷新</el-button>
-            <el-button type="primary" :icon="Check" @click="handleBatchHandle('resolved')" :disabled="selectedIds.length === 0">
+            <el-button :icon="Refresh" @click="refreshAll">刷新</el-button>
+            <el-button
+              type="primary"
+              :icon="Check"
+              :disabled="selectedIds.length === 0"
+              @click="openBatchHandle('resolved')"
+            >
               批量处理
             </el-button>
           </div>
         </div>
       </template>
 
-      <!-- 统计条 -->
+      <!-- 统计条：绑定 alerts.* / 顶层别名 -->
       <el-row :gutter="12" class="stats-bar">
         <el-col :span="6">
           <div class="stat-item total" :class="{ active: !filterForm.status }" @click="filterByStatus('')">
-            <div class="stat-num">{{ stats.total || 0 }}</div>
+            <div class="stat-num">{{ stats.total }}</div>
             <div class="stat-label">全部告警</div>
           </div>
         </el-col>
         <el-col :span="6">
-          <div class="stat-item unhandled" :class="{ active: filterForm.status === 'unhandled' }" @click="filterByStatus('unhandled')">
-            <div class="stat-num">{{ stats.unhandled || 0 }}</div>
+          <div
+            class="stat-item unhandled"
+            :class="{ active: filterForm.status === 'unhandled' }"
+            @click="filterByStatus('unhandled')"
+          >
+            <div class="stat-num">{{ stats.unhandled }}</div>
             <div class="stat-label">待处理</div>
           </div>
         </el-col>
         <el-col :span="6">
-          <div class="stat-item processing" :class="{ active: filterForm.status === 'processing' }" @click="filterByStatus('processing')">
-            <div class="stat-num">{{ stats.processing || 0 }}</div>
+          <div
+            class="stat-item processing"
+            :class="{ active: filterForm.status === 'processing' }"
+            @click="filterByStatus('processing')"
+          >
+            <div class="stat-num">{{ stats.processing }}</div>
             <div class="stat-label">处理中</div>
           </div>
         </el-col>
         <el-col :span="6">
-          <div class="stat-item resolved" :class="{ active: filterForm.status === 'resolved' }" @click="filterByStatus('resolved')">
-            <div class="stat-num">{{ stats.resolved || 0 }}</div>
+          <div
+            class="stat-item resolved"
+            :class="{ active: filterForm.status === 'resolved' }"
+            @click="filterByStatus('resolved')"
+          >
+            <div class="stat-num">{{ stats.resolved }}</div>
             <div class="stat-label">已处理</div>
           </div>
         </el-col>
       </el-row>
 
-      <!-- 筛选区 -->
       <div class="filter-bar">
         <el-form :inline="true" :model="filterForm">
           <el-form-item label="告警类型">
@@ -102,7 +118,6 @@
         </el-form>
       </div>
 
-      <!-- 列表 -->
       <el-table
         :data="tableData"
         v-loading="loading"
@@ -112,7 +127,7 @@
         @row-click="handleRowClick"
       >
         <el-table-column type="selection" width="50" />
-        <el-table-column prop="id" label="ID" width="60" />
+        <el-table-column prop="id" label="ID" width="70" />
         <el-table-column label="级别" width="80">
           <template #default="{ row }">
             <el-tag :type="levelTagType(row.level)" size="small" effect="dark">
@@ -120,26 +135,29 @@
             </el-tag>
           </template>
         </el-table-column>
-        <el-table-column label="类型" width="100">
+        <el-table-column label="类型" width="110">
           <template #default="{ row }">
             <span class="type-cell">
-              <el-icon :class="row.type">
-                <component :is="alertIcon(row.type)" />
-              </el-icon>
+              <el-icon :class="row.type"><Warning /></el-icon>
               {{ typeText(row.type) }}
             </span>
           </template>
         </el-table-column>
         <el-table-column label="摄像头" min-width="150">
           <template #default="{ row }">
-            <div>{{ row.cameraName }}</div>
+            <div>{{ row.cameraName || '-' }}</div>
             <div class="cam-sub">{{ row.cameraLocation || row.cameraIp || '-' }}</div>
           </template>
         </el-table-column>
         <el-table-column prop="description" label="告警描述" min-width="180" show-overflow-tooltip />
+        <el-table-column label="目标数" width="80">
+          <template #default="{ row }">
+            {{ row.detectionCount }}
+          </template>
+        </el-table-column>
         <el-table-column label="置信度" width="90">
           <template #default="{ row }">
-            <span>{{ formatConfidence(row.confidence) }}</span>
+            {{ formatConfidence(row.confidence) }}
           </template>
         </el-table-column>
         <el-table-column label="状态" width="100">
@@ -164,7 +182,7 @@
               type="success"
               link
               size="small"
-              @click.stop="handleSingle(row)"
+              @click.stop="openSingleHandle(row)"
             >
               处理
             </el-button>
@@ -172,7 +190,6 @@
         </el-table-column>
       </el-table>
 
-      <!-- 分页 -->
       <div class="pagination">
         <el-pagination
           v-model:current-page="pagination.page"
@@ -186,7 +203,6 @@
       </div>
     </el-card>
 
-    <!-- 处理弹窗 -->
     <el-dialog v-model="handleDialogVisible" title="处理告警" width="500px">
       <el-form :model="handleForm" label-width="80px">
         <el-form-item label="处理状态">
@@ -219,42 +235,67 @@ import { ref, reactive, onMounted, onUnmounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { alertApi, cameraApi } from '@/api'
 import { onRealtime } from '@/utils/realtime'
-import { ElMessage, ElMessageBox } from 'element-plus'
+import { ElMessage } from 'element-plus'
 import { Refresh, Check, Warning } from '@element-plus/icons-vue'
 import dayjs from 'dayjs'
+
+/** Canonical alert list row (matches AlertSerializer list) */
+interface AlertItem {
+  id: number
+  cameraId: number | null
+  cameraName: string
+  cameraLocation: string
+  cameraIp: string
+  cameraStatus: string
+  type: string
+  level: string
+  description: string
+  confidence: number
+  status: string
+  detectionCount: number
+  hasTicket: boolean
+  triggeredAt?: string
+  resolvedBy?: string
+  resolvedAt?: string
+  resolvedNote?: string
+}
+
+interface CameraOption {
+  id: number
+  name: string
+}
 
 const router = useRouter()
 const loading = ref(false)
 const submitLoading = ref(false)
-const tableData = ref<any[]>([])
+const tableData = ref<AlertItem[]>([])
 const selectedIds = ref<number[]>([])
-const selectedRows = ref<any[]>([])
-const cameraOptions = ref<any[]>([])
+const cameraOptions = ref<CameraOption[]>([])
 const handleDialogVisible = ref(false)
+const handleMode = ref<'single' | 'batch'>('single')
 const handleForm = reactive({ status: 'resolved', note: '' })
-const stats = reactive<any>({ total: 0, unhandled: 0, processing: 0, resolved: 0 })
+const stats = reactive({
+  total: 0,
+  unhandled: 0,
+  processing: 0,
+  resolved: 0
+})
 
 const filterForm = reactive({
   type: '',
   level: '',
   status: '',
-  cameraId: '',
+  cameraId: '' as number | '',
   keyword: ''
 })
 
 const dateRange = ref<string[]>([])
-
 const pagination = reactive({
   page: 1,
   pageSize: 10,
   total: 0
 })
 const realtimeOffs: Array<() => void> = []
-
-function alertIcon(type: string) {
-  // Element Plus 图标库无 Fire/Parking 等，统一用 Warning 图标
-  return Warning
-}
 
 function levelText(level: string) {
   const map: Record<string, string> = { high: '高危', medium: '中危', low: '低危' }
@@ -300,8 +341,40 @@ function formatConfidence(value?: number) {
   return `${pct.toFixed(1)}%`
 }
 
-function formatDate(date: string) {
+function formatDate(date?: string) {
+  if (!date) return '-'
   return dayjs(date).format('YYYY-MM-DD HH:mm:ss')
+}
+
+function normalizeAlert(raw: any): AlertItem {
+  return {
+    id: Number(raw.id),
+    cameraId: raw.cameraId == null ? null : Number(raw.cameraId),
+    cameraName: raw.cameraName || '',
+    cameraLocation: raw.cameraLocation || '',
+    cameraIp: raw.cameraIp || '',
+    cameraStatus: raw.cameraStatus || '',
+    type: raw.type || '',
+    level: raw.level || '',
+    description: raw.description || '',
+    confidence: Number(raw.confidence || 0),
+    status: raw.status || 'unhandled',
+    detectionCount: Number(raw.detectionCount ?? (raw.detectionBoxes || []).length ?? 0),
+    hasTicket: !!raw.hasTicket,
+    triggeredAt: raw.triggeredAt,
+    resolvedBy: raw.resolvedBy || '',
+    resolvedAt: raw.resolvedAt,
+    resolvedNote: raw.resolvedNote || ''
+  }
+}
+
+function applyStats(res: any) {
+  const alerts = res?.alerts || {}
+  const statusCounts = res?.statusCounts || {}
+  stats.total = Number(alerts.total ?? res?.total ?? 0)
+  stats.unhandled = Number(alerts.unhandled ?? res?.unhandled ?? statusCounts.unhandled ?? 0)
+  stats.processing = Number(alerts.processing ?? res?.processing ?? statusCounts.processing ?? 0)
+  stats.resolved = Number(alerts.resolved ?? res?.resolved ?? statusCounts.resolved ?? 0)
 }
 
 function filterByStatus(status: string) {
@@ -313,38 +386,54 @@ function filterByStatus(status: string) {
 async function loadCameras() {
   try {
     const res: any = await cameraApi.getAll()
-    cameraOptions.value = res || []
-  } catch (e) {}
+    cameraOptions.value = (res || []).map((c: any) => ({
+      id: Number(c.id),
+      name: c.name || `摄像头#${c.id}`
+    }))
+  } catch {
+    cameraOptions.value = []
+  }
 }
 
 async function loadStats() {
   try {
     const res: any = await alertApi.getStats()
-    stats.total = res.total || 0
-    stats.unhandled = res.statusCounts?.unhandled || 0
-    stats.processing = res.statusCounts?.processing || 0
-    stats.resolved = res.statusCounts?.resolved || 0
-  } catch (e) {}
+    applyStats(res)
+  } catch {
+    /* ignore */
+  }
 }
 
 async function loadData() {
   loading.value = true
   try {
-    const params: any = {
+    const params: Record<string, any> = {
       page: pagination.page,
-      pageSize: pagination.pageSize,
-      ...filterForm
+      pageSize: pagination.pageSize
     }
+    if (filterForm.type) params.type = filterForm.type
+    if (filterForm.level) params.level = filterForm.level
+    if (filterForm.status) params.status = filterForm.status
+    if (filterForm.cameraId !== '' && filterForm.cameraId != null) {
+      params.cameraId = filterForm.cameraId
+    }
+    if (filterForm.keyword) params.keyword = filterForm.keyword
     if (dateRange.value?.length === 2) {
       params.startDate = dateRange.value[0]
       params.endDate = dateRange.value[1]
     }
+
     const res: any = await alertApi.getList(params)
-    tableData.value = res.list || []
-    pagination.total = res.total || 0
+    tableData.value = (res.list || []).map(normalizeAlert)
+    pagination.total = Number(res.total || 0)
   } finally {
     loading.value = false
   }
+}
+
+function refreshAll() {
+  loadStats()
+  loadData()
 }
 
 function resetFilter() {
@@ -358,32 +447,32 @@ function resetFilter() {
   loadData()
 }
 
-function handleSelectionChange(selection: any[]) {
-  selectedIds.value = selection.map(item => item.id)
-  selectedRows.value = selection
+function handleSelectionChange(selection: AlertItem[]) {
+  selectedIds.value = selection.map((item) => item.id)
 }
 
-function handleRowClick(row: any) {
+function handleRowClick(row: AlertItem) {
   viewDetail(row)
 }
 
-function viewDetail(row: any) {
+function viewDetail(row: AlertItem) {
   router.push(`/alerts/${row.id}`)
 }
 
-function handleSingle(row: any) {
-  selectedRows.value = [row]
+function openSingleHandle(row: AlertItem) {
+  handleMode.value = 'single'
   selectedIds.value = [row.id]
   handleForm.status = 'resolved'
   handleForm.note = ''
   handleDialogVisible.value = true
 }
 
-function handleBatchHandle(status: string) {
+function openBatchHandle(status: string) {
   if (selectedIds.value.length === 0) {
     ElMessage.warning('请选择要处理的告警')
     return
   }
+  handleMode.value = 'batch'
   handleForm.status = status
   handleForm.note = ''
   handleDialogVisible.value = true
@@ -392,23 +481,27 @@ function handleBatchHandle(status: string) {
 async function submitHandle() {
   submitLoading.value = true
   try {
-    if (selectedIds.value.length === 1) {
-      await alertApi.handle(selectedIds.value[0], handleForm)
-    } else {
-      await alertApi.batchHandle({
-        ids: selectedIds.value,
-        status: handleForm.status,
-        note: handleForm.note
-      })
+    const payload = {
+      status: handleForm.status,
+      note: handleForm.note || ''
     }
-    ElMessage.success(`成功处理 ${selectedIds.value.length} 条告警`)
+    let count = selectedIds.value.length
+    if (handleMode.value === 'single' || selectedIds.value.length === 1) {
+      await alertApi.handle(selectedIds.value[0], payload)
+      count = 1
+    } else {
+      const res: any = await alertApi.batchHandle({
+        ids: selectedIds.value,
+        ...payload
+      })
+      count = Number(res.count ?? selectedIds.value.length)
+    }
+    ElMessage.success(`成功处理 ${count} 条告警`)
     handleDialogVisible.value = false
     selectedIds.value = []
-    selectedRows.value = []
-    loadData()
-    loadStats()
-  } catch (e) {
-    // 错误已处理
+    refreshAll()
+  } catch {
+    /* request interceptor */
   } finally {
     submitLoading.value = false
   }
@@ -416,17 +509,10 @@ async function submitHandle() {
 
 onMounted(() => {
   loadCameras()
-  loadStats()
-  loadData()
+  refreshAll()
   realtimeOffs.push(
-    onRealtime('alert:created', () => {
-      loadData()
-      loadStats()
-    }),
-    onRealtime('alert:updated', () => {
-      loadData()
-      loadStats()
-    })
+    onRealtime('alert:created', () => refreshAll()),
+    onRealtime('alert:updated', () => refreshAll())
   )
 })
 

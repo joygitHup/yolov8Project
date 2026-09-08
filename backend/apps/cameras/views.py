@@ -3,8 +3,6 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from django.db.models import Q
-from apps.alerts.models import Alert
-from apps.alerts.serializers import AlertSerializer
 from apps.common.pagination import paginate_qs
 from apps.common.permissions import IsAdminOrOperator
 from apps.inference.runtime import get_latest_frame
@@ -27,50 +25,62 @@ class CameraListCreateView(APIView):
         return [IsAuthenticated()]
 
     def get(self, request):
-        qs = Camera.objects.all()
-        keyword = request.query_params.get("keyword") or ""
-        status = request.query_params.get("status") or ""
-        cam_type = request.query_params.get("type") or ""
+        qs = Camera.objects.all().order_by("-id")
+        keyword = (request.query_params.get("keyword") or "").strip()
+        status = (request.query_params.get("status") or "").strip()
+        cam_type = (request.query_params.get("type") or "").strip()
+        enabled = request.query_params.get("enabled")
         if keyword:
             qs = qs.filter(
                 Q(name__icontains=keyword) | Q(location__icontains=keyword) | Q(ip__icontains=keyword)
             )
-        if status:
+        if status in ("online", "offline"):
             qs = qs.filter(status=status)
-        if cam_type:
+        if cam_type in ("hikvision", "dahua", "other"):
             qs = qs.filter(type=cam_type)
+        if enabled is not None and str(enabled).strip() != "":
+            val = str(enabled).strip().lower()
+            if val in ("1", "true", "yes"):
+                qs = qs.filter(enabled=True)
+            elif val in ("0", "false", "no"):
+                qs = qs.filter(enabled=False)
         return Response(paginate_qs(qs, request, CameraSerializer))
 
     def post(self, request):
-        if not request.data.get("name") or not request.data.get("rtsp"):
+        data = request.data.copy() if hasattr(request.data, "copy") else dict(request.data)
+        if not data.get("name") or not data.get("rtsp"):
             raise ValidationError("名称和RTSP地址不能为空")
-        ser = CameraSerializer(data=request.data)
+        if "detectionTypes" not in data:
+            data["detectionTypes"] = ["intrusion", "parking", "fire"]
+        if "status" not in data:
+            data["status"] = "offline"
+        if "enabled" not in data:
+            data["enabled"] = True
+        ser = CameraSerializer(data=data)
         ser.is_valid(raise_exception=True)
-        camera = ser.save(
-            detection_types=request.data.get("detectionTypes") or ["intrusion", "parking", "fire"],
-            status="online",
-        )
+        camera = ser.save()
         return Response(CameraSerializer(camera).data)
 
 
 class CameraAllView(APIView):
     def get(self, request):
-        # Same records as camera management, unpaginated.
-        return Response(CameraSerializer(Camera.objects.all(), many=True).data)
+        qs = Camera.objects.all().order_by("id")
+        status = (request.query_params.get("status") or "").strip()
+        enabled = request.query_params.get("enabled")
+        if status in ("online", "offline"):
+            qs = qs.filter(status=status)
+        if enabled is not None and str(enabled).strip() != "":
+            val = str(enabled).strip().lower()
+            if val in ("1", "true", "yes"):
+                qs = qs.filter(enabled=True)
+            elif val in ("0", "false", "no"):
+                qs = qs.filter(enabled=False)
+        return Response(CameraSerializer(qs, many=True).data)
 
 
 class CameraMonitorWallView(APIView):
     def get(self, request):
-        cameras, frames = services.build_monitor_wall()
-        alerts = Alert.objects.filter(status="unhandled")[:20]
-        return Response({
-            "cameras": cameras,
-            "frames": frames,
-            "alerts": {
-                "list": AlertSerializer(alerts, many=True).data,
-                "total": Alert.objects.filter(status="unhandled").count(),
-            },
-        })
+        return Response(services.build_monitor_wall())
 
 
 class CameraDetailView(APIView):
@@ -84,17 +94,17 @@ class CameraDetailView(APIView):
 
     def put(self, request, pk):
         camera = _camera_or_404(pk)
-        ser = CameraSerializer(camera, data=request.data, partial=True)
+        data = request.data.copy() if hasattr(request.data, "copy") else dict(request.data)
+        ser = CameraSerializer(camera, data=data, partial=True)
         ser.is_valid(raise_exception=True)
-        if "detectionTypes" in request.data:
-            camera.detection_types = request.data.get("detectionTypes")
-        ser.save()
-        camera.refresh_from_db()
+        camera = ser.save()
         return Response(CameraSerializer(camera).data)
 
     def delete(self, request, pk):
-        _camera_or_404(pk).delete()
-        return Response({"message": "删除成功"})
+        camera = _camera_or_404(pk)
+        name = camera.name
+        camera.delete()
+        return Response({"message": "删除成功", "id": pk, "name": name})
 
 
 class CameraBatchDeleteView(APIView):
@@ -102,10 +112,18 @@ class CameraBatchDeleteView(APIView):
 
     def post(self, request):
         ids = request.data.get("ids")
-        if not isinstance(ids, list):
-            raise ValidationError("参数错误")
-        count, _ = Camera.objects.filter(id__in=ids).delete()
-        return Response({"message": f"成功删除 {count} 个摄像头", "count": count})
+        if not isinstance(ids, list) or not ids:
+            raise ValidationError("ids 必须为非空数组")
+        cleaned = []
+        for item in ids:
+            try:
+                cleaned.append(int(item))
+            except (TypeError, ValueError):
+                continue
+        if not cleaned:
+            raise ValidationError("ids 无效")
+        count, _ = Camera.objects.filter(id__in=cleaned).delete()
+        return Response({"message": f"成功删除 {count} 个摄像头", "count": count, "ids": cleaned})
 
 
 class CameraToggleView(APIView):
@@ -113,9 +131,12 @@ class CameraToggleView(APIView):
 
     def post(self, request, pk):
         camera = _camera_or_404(pk)
-        camera.enabled = not camera.enabled
-        camera.save(update_fields=["enabled"])
-        return Response({"enabled": camera.enabled})
+        if "enabled" in request.data:
+            camera.enabled = bool(request.data.get("enabled"))
+        else:
+            camera.enabled = not camera.enabled
+        camera.save(update_fields=["enabled", "updated_at"])
+        return Response(CameraSerializer(camera).data)
 
 
 class CameraPtzView(APIView):
@@ -147,14 +168,8 @@ class CameraPtzView(APIView):
 class CameraDetectionView(APIView):
     def get(self, request, pk):
         camera = _camera_or_404(pk)
-        live = bool(camera.enabled and camera.status == "online")
-        frame = get_latest_frame(camera.id) if live else None
-        return Response(frame or {
-            "cameraId": camera.id,
-            "timestamp": None,
-            "fps": 0,
-            "detections": [],
-        })
+        frame = get_latest_frame(camera.id)
+        return Response(services.normalize_frame(camera.id, frame))
 
 
 class CameraSnapshotView(APIView):

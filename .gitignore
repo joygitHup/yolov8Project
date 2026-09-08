@@ -90,6 +90,20 @@ logs/
 # Backend persisted store
 backend/data/*.json
 backend/data/*.sqlite3
+backend/data/.secret_key
+backend/data/hls/**
+!backend/data/hls/.gitkeep
+backend/data/alerts/**
+!backend/data/alerts/.gitkeep
+backend/data/flywheel/**
+!backend/data/flywheel/.gitkeep
+backend/data/_*.txt
+backend/data/*.sqlite3-shm
+backend/data/*.sqlite3-wal
+backend/auto.crt
+backend/auto.key
+backend/bus.jpg
+runs/
 
 # Preview files
 .preview

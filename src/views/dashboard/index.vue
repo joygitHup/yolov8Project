@@ -117,9 +117,16 @@
                 <div class="video-placeholder">
                   <el-icon v-if="cam.status === 'offline'" class="offline-icon"><VideoPause /></el-icon>
                   <template v-else>
-                    <div class="mock-video-bg"></div>
-                    <div class="mock-scanline"></div>
-                    <!-- 模拟检测框 -->
+                    <video
+                      class="dash-hls-video"
+                      muted
+                      autoplay
+                      playsinline
+                      :ref="(el) => bindDashVideo(cam.id, el)"
+                    />
+                    <div v-if="!dashStreamReady[cam.id]" class="mock-video-bg"></div>
+                    <div v-if="!dashStreamReady[cam.id]" class="mock-scanline"></div>
+                    <!-- 检测框 -->
                     <div
                       v-for="(box, idx) in camMockDetections[cam.id] || []"
                       :key="idx"
@@ -158,6 +165,28 @@
           </div>
           <div class="panel-body">
             <div ref="typeChartRef" class="chart-container small"></div>
+          </div>
+        </div>
+
+        <!-- 告警级别 -->
+        <div class="panel">
+          <div class="panel-header">
+            <span class="panel-title">告警级别分布</span>
+          </div>
+          <div class="panel-body level-list">
+            <div v-for="item in alertLevels" :key="item.name" class="level-row">
+              <div class="level-meta">
+                <span class="level-dot" :style="{ background: item.color }"></span>
+                <span>{{ item.name }}</span>
+                <span class="level-value">{{ item.value }}</span>
+              </div>
+              <el-progress
+                :percentage="levelPercent(item.value)"
+                :show-text="false"
+                :color="item.color"
+              />
+            </div>
+            <div v-if="!alertLevels.length" class="empty-text">暂无数据</div>
           </div>
         </div>
 
@@ -232,6 +261,7 @@ import { ref, onMounted, onUnmounted, nextTick, reactive } from 'vue'
 import * as echarts from 'echarts'
 import { dashboardApi, cameraApi } from '@/api'
 import { onRealtime } from '@/utils/realtime'
+import { createHlsPool } from '@/utils/hlsPlayer'
 import { useAppStore } from '@/stores/app'
 import { ElMessage } from 'element-plus'
 import {
@@ -256,12 +286,71 @@ const currentTime = ref('')
 const overviewData = reactive<any>({})
 const displayCameras = ref<any[]>([])
 const recentAlerts = ref<any[]>([])
+const alertLevels = ref<any[]>([])
 const camMockDetections = reactive<Record<number, any[]>>({})
+const dashStreamReady = reactive<Record<number, boolean>>({})
+const dashVideoEls = ref<Record<number, HTMLVideoElement | null>>({})
+const dashStartedIds = new Set<number>()
+const dashHlsPool = createHlsPool()
 
 let timeTimer: any = null
 let dataTimer: any = null
 let detectionTimer: any = null
 const realtimeOffs: Array<() => void> = []
+
+function levelPercent(value: number) {
+  const total = alertLevels.value.reduce((sum, item) => sum + Number(item.value || 0), 0) || 1
+  return Math.min(100, Math.round((Number(value || 0) / total) * 100))
+}
+
+function bindDashVideo(id: number, el: Element | null) {
+  dashVideoEls.value[id] = (el as HTMLVideoElement) || null
+}
+
+async function ensureDashStreams() {
+  const cams = displayCameras.value.filter((c) => c.status === 'online').slice(0, 4)
+  const visible = new Set(cams.map((c) => c.id as number))
+  for (const id of [...dashStartedIds]) {
+    if (!visible.has(id)) {
+      dashStartedIds.delete(id)
+      dashStreamReady[id] = false
+      dashHlsPool.unbind(id)
+      cameraApi.stopStream(id).catch(() => undefined)
+    }
+  }
+  for (const cam of cams) {
+    if (dashStartedIds.has(cam.id)) {
+      if (!cam.hlsUrl) continue
+      await nextTick()
+      const video = dashVideoEls.value[cam.id]
+      if (video) {
+        dashHlsPool.bind(cam.id, video, cam.hlsUrl)
+        dashStreamReady[cam.id] = true
+      }
+      continue
+    }
+    try {
+      const started: any = await cameraApi.startStream(cam.id, { preferRtsp: true, wait: false })
+      dashStartedIds.add(cam.id)
+      cam.hlsUrl = started?.hlsUrl || cam.hlsUrl || ''
+      await nextTick()
+      const video = dashVideoEls.value[cam.id]
+      if (video && cam.hlsUrl) {
+        dashHlsPool.bind(cam.id, video, cam.hlsUrl)
+        dashStreamReady[cam.id] = true
+      }
+    } catch {
+      dashStreamReady[cam.id] = false
+    }
+  }
+}
+
+async function stopDashStreams() {
+  const ids = [...dashStartedIds]
+  dashStartedIds.clear()
+  dashHlsPool.destroyAll()
+  await Promise.all(ids.map((id) => cameraApi.stopStream(id).catch(() => undefined)))
+}
 
 function updateTime() {
   currentTime.value = dayjs().format('YYYY年MM月DD日 HH:mm:ss')
@@ -286,9 +375,48 @@ async function fetchOverview() {
 async function fetchCameras() {
   try {
     const res: any = await cameraApi.getAll()
-    displayCameras.value = (res || []).slice(0, 4)
+    const list = (res || []).slice().sort((a: any, b: any) => {
+      if (a.status === b.status) return a.id - b.id
+      return a.status === 'online' ? -1 : 1
+    })
+    displayCameras.value = list.slice(0, 4)
     await fetchRealtimeDetections()
+    await ensureDashStreams()
   } catch (e) {}
+}
+
+function applyScreenPayload(res: any) {
+  if (!res) return
+  if (res.overview) Object.assign(overviewData, res.overview)
+  if (Array.isArray(res.recentAlerts)) recentAlerts.value = res.recentAlerts
+  if (Array.isArray(res.alertLevels)) alertLevels.value = res.alertLevels
+  if (Array.isArray(res.cameras) && res.cameras.length) {
+    displayCameras.value = res.cameras
+  }
+  if (Array.isArray(res.realtimeDetections)) {
+    res.realtimeDetections.forEach((item: any) => applyDetectionFrame(item))
+  }
+  if (Array.isArray(res.alertTrend)) updateTrendChart(res.alertTrend)
+  if (Array.isArray(res.alertTypes)) updateTypeChart(res.alertTypes)
+  if (Array.isArray(res.cameraRank)) updateRankChart(res.cameraRank)
+}
+
+async function loadScreenData(withStreams = false) {
+  try {
+    const res: any = await dashboardApi.getScreen()
+    applyScreenPayload(res)
+    if (withStreams) await ensureDashStreams()
+  } catch (e) {
+    // fallback to individual endpoints
+    await Promise.all([
+      fetchOverview(),
+      fetchRecentAlerts(),
+      fetchRealtimeDetections(),
+      loadChartsData(),
+      loadLevelData()
+    ])
+    if (withStreams) await fetchCameras()
+  }
 }
 
 function applyDetectionFrame(frame: any) {
@@ -322,6 +450,13 @@ async function fetchRecentAlerts() {
   try {
     const res: any = await dashboardApi.getRecentAlerts()
     recentAlerts.value = res || []
+  } catch (e) {}
+}
+
+async function loadLevelData() {
+  try {
+    const res: any = await dashboardApi.getAlertLevels()
+    alertLevels.value = res || []
   } catch (e) {}
 }
 
@@ -363,7 +498,7 @@ function updateTrendChart(data: any[]) {
     },
     xAxis: {
       type: 'category',
-      data: data.map(d => d.hour),
+      data: data.map(d => d.hour || d.label || d.date),
       axisLine: { lineStyle: { color: '#374151' } },
       axisLabel: { color: '#9ca3af', fontSize: 11 }
     },
@@ -510,12 +645,7 @@ async function loadChartsData() {
 
 async function refreshData() {
   loading.value = true
-  await Promise.all([
-    fetchOverview(),
-    fetchRecentAlerts(),
-    fetchRealtimeDetections(),
-    loadChartsData()
-  ])
+  await loadScreenData(true)
   loading.value = false
   ElMessage.success('数据已刷新')
 }
@@ -532,20 +662,12 @@ onMounted(async () => {
 
   await nextTick()
   initCharts()
-  await fetchOverview()
-  await fetchCameras()
-  await fetchRecentAlerts()
-  await loadChartsData()
+  await loadScreenData(true)
 
-  // 定时刷新数据
+  // 定时刷新数据（聚合接口）
   dataTimer = setInterval(async () => {
-    await Promise.all([
-      fetchOverview(),
-      fetchRecentAlerts(),
-      fetchRealtimeDetections(),
-      loadChartsData()
-    ])
-  }, 8000)
+    await loadScreenData(false)
+  }, 10000)
 
   const offFrame = onRealtime('detection:frame', (frame) => {
     applyDetectionFrame(frame)
@@ -568,6 +690,7 @@ onUnmounted(() => {
   typeChart?.dispose()
   rankChart?.dispose()
   window.removeEventListener('resize', handleResize)
+  stopDashStreams()
   appStore.setTheme('light')
 })
 </script>
@@ -881,39 +1004,18 @@ onUnmounted(() => {
   overflow: hidden;
 }
 
-.mock-video-bg {
+.dash-hls-video {
   position: absolute;
   inset: 0;
-  background: 
-    radial-gradient(ellipse at 30% 40%, rgba(59, 130, 246, 0.15) 0%, transparent 50%),
-    radial-gradient(ellipse at 70% 60%, rgba(82, 196, 26, 0.1) 0%, transparent 40%),
-    linear-gradient(180deg, #1e293b 0%, #0f172a 100%);
-}
-
-.mock-scanline {
-  position: absolute;
-  inset: 0;
-  background: repeating-linear-gradient(
-    0deg,
-    transparent,
-    transparent 2px,
-    rgba(0, 0, 0, 0.3) 2px,
-    rgba(0, 0, 0, 0.3) 4px
-  );
-  pointer-events: none;
-}
-
-.offline-icon {
-  position: absolute;
-  top: 50%;
-  left: 50%;
-  transform: translate(-50%, -50%);
-  font-size: 48px;
-  color: #374151;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  z-index: 0;
 }
 
 .detection-box {
   position: absolute;
+  z-index: 2;
   border: 2px solid #52c41a;
   border-radius: 2px;
   transition: all 0.5s ease;
@@ -993,6 +1095,40 @@ onUnmounted(() => {
   display: flex;
   flex-direction: column;
   gap: 8px;
+}
+
+.level-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding-top: 4px;
+}
+
+.level-row {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.level-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: #e5e7eb;
+  font-size: 12px;
+}
+
+.level-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.level-value {
+  margin-left: auto;
+  color: #93c5fd;
+  font-family: Consolas, monospace;
 }
 
 .alert-item {

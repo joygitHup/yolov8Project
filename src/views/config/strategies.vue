@@ -4,10 +4,11 @@
       <el-col :span="4">
         <el-card class="nav-card">
           <el-menu :default-active="activeMenu" router class="config-menu">
-            <el-menu-item index="/config"><el-icon><Setting /></el-icon><span>系统设置</span></el-menu-item>
+            <el-menu-item index="/config"><el-icon><Tools /></el-icon><span>系统设置</span></el-menu-item>
             <el-menu-item index="/config/detection"><el-icon><Aim /></el-icon><span>检测参数</span></el-menu-item>
             <el-menu-item index="/config/strategies"><el-icon><Lock /></el-icon><span>布防策略</span></el-menu-item>
             <el-menu-item index="/config/notification"><el-icon><Message /></el-icon><span>通知配置</span></el-menu-item>
+            <el-menu-item index="/flywheel"><el-icon><EditPen /></el-icon><span>标注台</span></el-menu-item>
             <el-menu-item v-if="userStore.isAdmin" index="/config/users"><el-icon><User /></el-icon><span>用户管理</span></el-menu-item>
           </el-menu>
         </el-card>
@@ -159,7 +160,7 @@ import { useRoute } from 'vue-router'
 import { configApi, cameraApi } from '@/api'
 import { useUserStore } from '@/stores/user'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Setting, Aim, Lock, Message, User, Plus } from '@element-plus/icons-vue'
+import { Tools, Aim, Lock, Message, User, Plus, EditPen } from '@element-plus/icons-vue'
 
 const route = useRoute()
 const userStore = useUserStore()

@@ -17,7 +17,14 @@ from apps.inference.notify import CHANNEL_LABEL, send_channel
 from apps.realtime.broadcast import broadcast
 from .models import NotificationLog, Strategy
 from .serializers import StrategySerializer
-from .services import deep_merge, get_all_settings, get_section, save_section
+from .services import (
+    apply_settings_patch,
+    deep_merge,
+    get_all_settings,
+    get_section,
+    normalize_settings,
+    save_section,
+)
 
 
 def _uptime_text():
@@ -52,9 +59,9 @@ class PublicSettingsView(APIView):
     def get(self, request):
         system = get_section("system")
         return Response({
-            "title": system.get("title") or "YOLOv8 视频智能分析系统",
-            "logo": system.get("logo") or "",
-            "version": system.get("version") or "1.0.0",
+            "title": system["title"],
+            "logo": system["logo"],
+            "version": system["version"],
         })
 
 
@@ -68,13 +75,15 @@ class SettingsView(APIView):
         return Response(get_all_settings())
 
     def put(self, request):
-        current = get_all_settings()
-        for key in ("detection", "notification", "alertDeduplication", "system"):
-            if key in request.data and isinstance(request.data.get(key), dict):
-                save_section(key, deep_merge(current.get(key, {}), request.data[key]))
-        settings = get_all_settings()
+        try:
+            settings = apply_settings_patch(dict(request.data))
+        except ValueError as exc:
+            raise ValidationError(str(exc))
         _publish("settings")
-        return Response({"message": "设置已更新并生效", "settings": settings})
+        return Response({
+            "message": "设置已更新并生效",
+            "settings": settings,
+        })
 
 
 class DetectionView(APIView):
@@ -87,20 +96,35 @@ class DetectionView(APIView):
         return Response(get_section("detection"))
 
     def put(self, request):
+        import logging
+
+        from apps.systemcfg.services import normalize_detection
+
         patch = dict(request.data)
-        detection = deep_merge(get_section("detection"), patch)
-        detection["confidenceThreshold"] = round(_clamp(detection.get("confidenceThreshold"), 0.1, 0.95, 0.5), 2)
-        detection["iouThreshold"] = round(_clamp(detection.get("iouThreshold"), 0.1, 0.9, 0.45), 2)
-        detection["fps"] = round(_clamp(detection.get("fps"), 0.5, 10, 2), 2)
-        detection["maxDetections"] = int(_clamp(detection.get("maxDetections"), 10, 500, 100))
-        detection["trackLostFrames"] = int(_clamp(detection.get("trackLostFrames"), 1, 100, 30))
-        detection["trackingEnabled"] = bool(detection.get("trackingEnabled", True))
-        categories = detection.get("categories") or []
-        if not isinstance(categories, list):
-            raise ValidationError("检测类别格式错误")
-        detection["categories"] = [str(item) for item in categories]
+        before = get_section("detection")
+        detection = normalize_detection(deep_merge(before, patch))
         save_section("detection", detection)
         _publish("detection", {"detection": detection})
+
+        new_path = (detection.get("modelPath") or "").strip()
+        old_path = (before.get("modelPath") or "").strip()
+        if new_path and new_path != old_path:
+            try:
+                from apps.inference import remote as yolo_remote
+
+                if yolo_remote.infer_mode() == "remote":
+                    yolo_remote.reload_model(new_path)
+            except Exception as exc:
+                logging.getLogger("systemcfg").warning(
+                    "remote model reload on save failed: %s", exc
+                )
+        try:
+            from apps.flywheel.jobs import job_write_yaml
+
+            job_write_yaml({})
+        except Exception:
+            pass
+
         return Response({"message": "检测参数已更新并立即生效", "detection": detection})
 
 
@@ -217,23 +241,40 @@ class StrategyToggleView(APIView):
 
 
 class SystemInfoView(APIView):
+    """
+    Canonical system info for the settings page:
+      system: { title, version, environment, uptime, cpuPercent, memoryPercent, gpuPercent }
+      stats:  { cameras{total,online,offline,enabled}, alerts{total,today,unhandled},
+                users{total,active}, strategies{total,enabled} }
+      detection / alertDeduplication — current related sections
+    """
+
     def get(self, request):
         cameras = Camera.objects.all()
         today = timezone.localtime().replace(hour=0, minute=0, second=0, microsecond=0)
         system = get_section("system")
         detection = get_section("detection")
+        dedup = get_section("alertDeduplication")
         metrics = collect_system_metrics()
-        metrics["uptime"] = _uptime_text()
+        uptime = _uptime_text()
+        cpu = metrics.get("cpu")
+        memory = metrics.get("memory")
+        gpu = metrics.get("gpu")
         return Response({
             "system": {
-                "name": system.get("title"),
-                "title": system.get("title"),
-                "version": system.get("version") or "1.0.0",
+                "title": system["title"],
+                "logo": system["logo"],
+                "version": system["version"],
                 "environment": "development" if dj_settings.DEBUG else "production",
-                "uptime": metrics["uptime"],
-                "cpu": metrics.get("cpu"),
-                "memory": metrics.get("memory"),
-                "gpu": metrics.get("gpu"),
+                "uptime": uptime,
+                "cpuPercent": cpu,
+                "memoryPercent": memory,
+                "gpuPercent": gpu,
+                # aliases kept for older UI bindings
+                "name": system["title"],
+                "cpu": cpu,
+                "memory": memory,
+                "gpu": gpu,
             },
             "stats": {
                 "cameras": {
@@ -257,5 +298,13 @@ class SystemInfoView(APIView):
                 },
             },
             "detection": detection,
-            "alertDeduplication": get_section("alertDeduplication"),
+            "alertDeduplication": dedup,
+            "flywheel": get_section("flywheel"),
+            "settings": normalize_settings({
+                "system": system,
+                "detection": detection,
+                "alertDeduplication": dedup,
+                "flywheel": get_section("flywheel"),
+                "notification": get_section("notification"),
+            }),
         })

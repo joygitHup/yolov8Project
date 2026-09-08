@@ -74,13 +74,22 @@
         >
           <div v-if="cam" class="video-container">
             <div class="video-content">
-              <div v-if="!isLive(cam)" class="video-offline">
+              <div v-if="!canPreview(cam)" class="video-offline">
                 <el-icon :size="48"><VideoPause /></el-icon>
-                <p>{{ !cam.enabled ? '设备已停用' : '设备离线' }}</p>
+                <p>{{ !cam.enabled ? '设备已停用' : '未配置 RTSP' }}</p>
                 <span class="offline-meta">{{ cam.ip }} {{ cam.resolution }}</span>
               </div>
               <template v-else>
-                <div class="camera-scene" :style="sceneStyle(cam)"></div>
+                <video
+                  class="hls-video"
+                  muted
+                  autoplay
+                  playsinline
+                  :ref="(el) => bindVideoEl(cam.id, el)"
+                />
+                <div v-if="!streamReady[cam.id]" class="camera-scene stream-fallback" :style="sceneStyle(cam)">
+                  <span class="stream-loading">视频流连接中…</span>
+                </div>
                 <div class="video-overlay">
                   <div
                     v-for="(box, boxIdx) in detectionData[cam.id] || []"
@@ -94,15 +103,16 @@
                 </div>
                 <div class="video-info">
                   <span class="video-title">{{ cam.name }}</span>
-                  <span class="live-badge" :class="{ recording: cam.recording }">
-                    <span class="live-dot"></span> {{ cam.recording ? 'REC' : 'LIVE' }}
+                  <span class="live-badge" :class="{ recording: cam.recording, waiting: !isLive(cam) }">
+                    <span class="live-dot"></span> {{ cam.recording ? 'REC' : (isLive(cam) ? 'LIVE' : '…') }}
                   </span>
                 </div>
                 <div class="video-meta">
                   {{ cam.ip || '无IP' }} · {{ cam.resolution }} · {{ typeText(cam.type) }}
+                  <span v-if="cam.streamMode"> · {{ streamModeText(cam.streamMode) }}</span>
                 </div>
                 <div class="video-timestamp">
-                  {{ detectionData[cam.id]?.length || 0 }} 目标 · {{ cam.fps || 0 }} FPS · {{ currentTime }}
+                  {{ (detectionData[cam.id]?.length || cam.detectionCount || 0) }} 目标 · {{ Number(cam.fps || 0).toFixed(0) }} FPS · {{ currentTime }}
                 </div>
               </template>
             </div>
@@ -189,10 +199,11 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted, reactive } from 'vue'
-import { useRouter } from 'vue-router'
+import { ref, computed, onMounted, onUnmounted, reactive, watch, nextTick } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import { cameraApi, alertApi } from '@/api'
 import { onRealtime } from '@/utils/realtime'
+import { createHlsPool } from '@/utils/hlsPlayer'
 import { ElMessage } from 'element-plus'
 import {
   Search, VideoCamera, FullScreen, Camera, VideoCameraFilled,
@@ -202,6 +213,7 @@ import {
 import dayjs from 'dayjs'
 
 const router = useRouter()
+const route = useRoute()
 const searchKeyword = ref('')
 const layoutMode = ref('4')
 const selectedCamera = ref<any>(null)
@@ -211,10 +223,97 @@ const unhandledCount = ref(0)
 const currentTime = ref('')
 const gridRef = ref<HTMLElement>()
 const detectionData = reactive<Record<number, any[]>>({})
+const streamReady = reactive<Record<number, boolean>>({})
+const videoEls = ref<Record<number, HTMLVideoElement | null>>({})
+const startedStreamIds = new Set<number>()
+const hlsPool = createHlsPool()
 
 let timeTimer: any = null
 let wallTimer: any = null
 const realtimeOffs: Array<() => void> = []
+
+function bindVideoEl(id: number, el: Element | null) {
+  videoEls.value[id] = (el as HTMLVideoElement) || null
+}
+
+let ensureStreamsBusy = false
+let ensureStreamsQueued = false
+let streamPollTimer: any = null
+
+async function ensureStreams() {
+  if (ensureStreamsBusy) {
+    ensureStreamsQueued = true
+    return
+  }
+  ensureStreamsBusy = true
+  try {
+    const slots = gridSlots.value.filter((c): c is any => !!c && canPreview(c))
+    const visibleIds = new Set(slots.map((c) => c.id as number))
+
+    for (const id of [...startedStreamIds]) {
+      if (!visibleIds.has(id)) {
+        startedStreamIds.delete(id)
+        streamReady[id] = false
+        hlsPool.unbind(id)
+        cameraApi.stopStream(id).catch(() => undefined)
+      }
+    }
+
+    const toStart: any[] = []
+    for (const cam of slots) {
+      if (startedStreamIds.has(cam.id)) {
+        if (!cam.hlsUrl) continue
+        await nextTick()
+        const video = videoEls.value[cam.id]
+        if (video && !streamReady[cam.id]) {
+          hlsPool.bind(cam.id, video, cam.hlsUrl)
+          streamReady[cam.id] = true
+        }
+        continue
+      }
+      toStart.push(cam)
+    }
+
+    await Promise.allSettled(
+      toStart.map(async (cam) => {
+        try {
+          const started: any = await cameraApi.startStream(cam.id, { preferRtsp: true, wait: false })
+          startedStreamIds.add(cam.id)
+          const url = started?.hlsUrl || cam.hlsUrl || ''
+          cam.hlsUrl = url
+          cam.streamStatus = started?.streamStatus || started?.status || 'starting'
+          cam.streamMode = started?.streamMode ?? started?.mode ?? cam.streamMode
+          cam.playlistReady = !!started?.playlistReady
+          if (!url) {
+            streamReady[cam.id] = false
+            return
+          }
+          await nextTick()
+          const video = videoEls.value[cam.id]
+          if (video) {
+            hlsPool.bind(cam.id, video, url)
+            streamReady[cam.id] = true
+          }
+        } catch {
+          streamReady[cam.id] = false
+        }
+      })
+    )
+  } finally {
+    ensureStreamsBusy = false
+    if (ensureStreamsQueued) {
+      ensureStreamsQueued = false
+      ensureStreams()
+    }
+  }
+}
+
+async function stopAllStreams() {
+  const ids = [...startedStreamIds]
+  startedStreamIds.clear()
+  hlsPool.destroyAll()
+  await Promise.all(ids.map((id) => cameraApi.stopStream(id).catch(() => undefined)))
+}
 
 const isRecording = computed(() => !!selectedCamera.value?.recording)
 
@@ -239,13 +338,20 @@ const gridSlots = computed(() => {
   return Array.from({ length: count }, (_, i) => ordered[i] || null)
 })
 
+function canPreview(cam: any) {
+  if (!cam || cam.enabled === false) return false
+  return !!(cam.previewEligible || cam.rtspConfigured || (cam.rtsp && String(cam.rtsp).trim()))
+}
+
 function isLive(cam: any) {
-  return !!cam && cam.enabled !== false && cam.status === 'online'
+  if (!cam) return false
+  return !!(cam.live || cam.hlsReady)
 }
 
 function cameraState(cam: any) {
   if (!cam?.enabled) return 'disabled'
-  return cam.status === 'online' ? 'online' : 'offline'
+  if (isLive(cam)) return 'online'
+  return 'offline'
 }
 
 function typeText(type: string) {
@@ -255,6 +361,16 @@ function typeText(type: string) {
     other: '其他'
   }
   return map[type] || type || '未知'
+}
+
+function streamModeText(mode: string | null | undefined) {
+  const map: Record<string, string> = {
+    mediamtx: 'MediaMTX',
+    rtsp: 'RTSP',
+    file: '本地视频',
+    demo: '演示源'
+  }
+  return mode ? (map[mode] || mode) : ''
 }
 
 function sceneStyle(cam: any) {
@@ -267,11 +383,17 @@ function sceneStyle(cam: any) {
 
 function boxStyle(box: any) {
   const bbox = box?.bbox || box || {}
+  const x = Number(bbox.x || 0)
+  const y = Number(bbox.y || 0)
+  const w = Number(bbox.w || 0)
+  const h = Number(bbox.h || 0)
+  // backend uses 0~1 normalized coords
+  const scale = x > 1 || y > 1 || w > 1 || h > 1 ? 1 : 100
   return {
-    left: (bbox.x || 0) * 100 + '%',
-    top: (bbox.y || 0) * 100 + '%',
-    width: (bbox.w || 0) * 100 + '%',
-    height: (bbox.h || 0) * 100 + '%'
+    left: x * scale + '%',
+    top: y * scale + '%',
+    width: w * scale + '%',
+    height: h * scale + '%'
   }
 }
 
@@ -303,10 +425,21 @@ function translateLabel(label: string) {
     person: '人',
     car: '轿车',
     truck: '卡车',
+    bus: '公交车',
+    bicycle: '自行车',
+    motorcycle: '摩托车',
     fire: '火焰',
     smoke: '烟雾',
-    bicycle: '自行车',
-    motorcycle: '摩托车'
+    人员: '人员',
+    轿车: '轿车',
+    卡车: '卡车',
+    公交车: '公交车',
+    自行车: '自行车',
+    摩托车: '摩托车',
+    火焰: '火焰',
+    乱停乱放: '乱停乱放',
+    乱扔垃圾: '乱扔垃圾',
+    网格区违停: '网格区违停'
   }
   return map[label] || label
 }
@@ -317,7 +450,28 @@ function formatTime(time: string) {
 
 function applyFrames(frames: Record<string, any> = {}) {
   Object.entries(frames).forEach(([id, frame]) => {
-    detectionData[Number(id)] = frame?.detections || []
+    const camId = Number(id)
+    const detections = (frame?.detections || []).map((d: any, idx: number) => {
+      const bbox = d?.bbox || d || {}
+      return {
+        id: d?.id ?? idx,
+        label: d?.label || 'unknown',
+        confidence: Number(d?.confidence || 0),
+        bbox: {
+          x: Number(bbox.x || 0),
+          y: Number(bbox.y || 0),
+          w: Number(bbox.w || 0),
+          h: Number(bbox.h || 0)
+        }
+      }
+    })
+    detectionData[camId] = detections
+    const cam = cameras.value.find((c) => c.id === camId)
+    if (cam) {
+      cam.detectionCount = frame?.detectionCount ?? detections.length
+      cam.fps = Number(frame?.fps || 0)
+      cam.lastFrameAt = frame?.timestamp || null
+    }
   })
 }
 
@@ -326,11 +480,19 @@ function syncSelected() {
     selectedCamera.value = null
     return
   }
+  const qid = Number(route.query.cameraId || 0)
+  if (qid) {
+    const fromQuery = cameras.value.find((c) => c.id === qid)
+    if (fromQuery) {
+      selectedCamera.value = fromQuery
+      return
+    }
+  }
   if (selectedCamera.value) {
     const next = cameras.value.find(c => c.id === selectedCamera.value.id)
     selectedCamera.value = next || cameras.value[0]
   } else {
-    selectedCamera.value = cameras.value[0]
+    selectedCamera.value = cameras.value.find((c) => isLive(c)) || cameras.value[0]
   }
 }
 
@@ -339,8 +501,11 @@ async function loadWall() {
     const res: any = await cameraApi.getMonitorWall()
     cameras.value = res.cameras || []
     applyFrames(res.frames || {})
-    realtimeAlerts.value = res.alerts?.list || []
-    unhandledCount.value = res.alerts?.total || 0
+    // Canonical: recentAlerts + unhandledCount; compat: alerts.list/total
+    realtimeAlerts.value = res.recentAlerts || res.alerts?.list || []
+    unhandledCount.value = Number(
+      res.unhandledCount ?? res.summary?.unhandledAlertCount ?? res.alerts?.total ?? 0
+    )
     syncSelected()
   } catch {
     await loadCamerasFallback()
@@ -436,24 +601,28 @@ function viewAlertDetail(alert: any) {
   router.push(`/alerts/${alert.id}`)
 }
 
-onMounted(() => {
-  loadWall()
+let streamWatchTimer: any = null
+watch([layoutMode, selectedCamera], () => {
+  clearTimeout(streamWatchTimer)
+  streamWatchTimer = setTimeout(() => nextTick(() => ensureStreams()), 300)
+})
+
+onMounted(async () => {
+  await loadWall()
+  await ensureStreams()
 
   timeTimer = setInterval(() => {
     currentTime.value = dayjs().format('YYYY-MM-DD HH:mm:ss')
   }, 1000)
   currentTime.value = dayjs().format('YYYY-MM-DD HH:mm:ss')
-  wallTimer = setInterval(loadWall, 8000)
+  wallTimer = setInterval(loadWall, 15000)
+  streamPollTimer = setInterval(() => {
+    if (startedStreamIds.size) ensureStreams()
+  }, 10000)
 
   const offFrame = onRealtime('detection:frame', (frame) => {
     if (frame?.cameraId == null) return
-    detectionData[frame.cameraId] = frame.detections || []
-    const cam = cameras.value.find(c => c.id === frame.cameraId)
-    if (cam) {
-      cam.detectionCount = (frame.detections || []).length
-      cam.fps = frame.fps
-      cam.lastFrameAt = frame.timestamp
-    }
+    applyFrames({ [String(frame.cameraId)]: frame })
   })
   const offAlert = onRealtime('alert:created', (alert) => {
     if (!alert) return
@@ -466,7 +635,10 @@ onMounted(() => {
 onUnmounted(() => {
   clearInterval(timeTimer)
   clearInterval(wallTimer)
+  clearInterval(streamPollTimer)
+  clearTimeout(streamWatchTimer)
   realtimeOffs.forEach((fn) => fn())
+  stopAllStreams()
 })
 </script>
 
@@ -673,6 +845,28 @@ onUnmounted(() => {
   color: #9ca3af;
 }
 
+.hls-video {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  background: #0f172a;
+  z-index: 0;
+}
+
+.stream-fallback {
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.stream-loading {
+  color: #94a3b8;
+  font-size: 13px;
+}
+
 .camera-scene {
   width: 100%;
   height: 100%;
@@ -696,6 +890,7 @@ onUnmounted(() => {
 .video-overlay {
   position: absolute;
   inset: 0;
+  z-index: 2;
   pointer-events: none;
 }
 
@@ -760,6 +955,10 @@ onUnmounted(() => {
 
 .live-badge.recording {
   background: rgba(245, 34, 45, 0.95);
+}
+
+.live-badge.waiting {
+  background: rgba(107, 114, 128, 0.9);
 }
 
 .live-dot {

@@ -1,0 +1,35 @@
+logLevel: info
+logDestinations: [stdout]
+
+# RTSP (publish / pull)
+rtsp: yes
+rtspAddress: :8554
+
+# Native HLS for browser playback (replaces Django data/hls remux)
+hls: yes
+hlsAddress: :8888
+hlsAlwaysRemux: yes
+hlsVariant: mpegts
+hlsSegmentCount: 7
+hlsSegmentDuration: 1s
+hlsSegmentMaxSize: 50M
+hlsAllowOrigins: ["*"]
+
+# WebRTC ready for future UI (not wired in frontend yet)
+webrtc: yes
+webrtcAddress: :8889
+webrtcAllowOrigins: ["*"]
+
+authMethod: internal
+authInternalUsers:
+  - user: any
+    pass:
+    ips: []
+    permissions:
+      - action: publish
+      - action: read
+      - action: playback
+
+paths:
+  mystream:
+  all_others:
