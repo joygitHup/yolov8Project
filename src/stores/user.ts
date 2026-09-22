@@ -54,13 +54,17 @@ export const useUserStore = defineStore('user', () => {
 
   let loggingOut = false
 
-  function logout() {
+  async function logout() {
     userInfo.value = null
     if (loggingOut) return
     loggingOut = true
-    authApi.logout().catch(() => undefined).finally(() => {
+    try {
+      await authApi.logout()
+    } catch {
+      /* ignore */
+    } finally {
       loggingOut = false
-    })
+    }
   }
 
   return {

@@ -23,7 +23,9 @@ $env:DEPLOY_RUN_PORT = "$port"
 $env:YOLO_INFER_MODE = if ($env:YOLO_INFER_MODE) { $env:YOLO_INFER_MODE } else { "remote" }
 $env:YOLO_SERVICE_URL = if ($env:YOLO_SERVICE_URL) { $env:YOLO_SERVICE_URL } else { "http://127.0.0.1:$yoloPort" }
 $env:YOLO_INGEST_URL = if ($env:YOLO_INGEST_URL) { $env:YOLO_INGEST_URL } else { "http://127.0.0.1:$apiPort/api/inference/ingest" }
-$env:DEMO_RTSP_PUBLISH = if ($env:DEMO_RTSP_PUBLISH) { $env:DEMO_RTSP_PUBLISH } else { "0" }
+# Default demo publisher ON so seed cameras get rtsp://127.0.0.1:8554/mystream
+# (wire_cameras_to_demo_rtsp only fills EMPTY rtsp; set 0 to use manual ffmpeg push).
+$env:DEMO_RTSP_PUBLISH = if ($env:DEMO_RTSP_PUBLISH) { $env:DEMO_RTSP_PUBLISH } else { "1" }
 $env:MEDIAMTX_HLS_BASE = if ($env:MEDIAMTX_HLS_BASE) { $env:MEDIAMTX_HLS_BASE } else { "http://127.0.0.1:8888" }
 
 $tokenFile = Join-Path $Root "backend\data\.ingest_token"
@@ -45,7 +47,7 @@ $env:MINIO_ENDPOINT = if ($env:MINIO_ENDPOINT) { $env:MINIO_ENDPOINT } else { "1
 $env:MINIO_BUCKET = if ($env:MINIO_BUCKET) { $env:MINIO_BUCKET } else { "yolov8pro" }
 $env:MINIO_ACCESS_KEY = if ($env:MINIO_ACCESS_KEY) { $env:MINIO_ACCESS_KEY } else { "Admin" }
 $env:MINIO_SECRET_KEY = if ($env:MINIO_SECRET_KEY) { $env:MINIO_SECRET_KEY } else { "Admin123" }
-$env:RABBITMQ_URL = if ($env:RABBITMQ_URL) { $env:RABBITMQ_URL } else { "amqp://admin:admin@127.0.0.1:5672/my_vhost" }
+$env:RABBITMQ_URL = if ($env:RABBITMQ_URL) { $env:RABBITMQ_URL } else { "amqp://yolov8:yolov8@127.0.0.1:5672/" }
 $env:KAFKA_BOOTSTRAP = if ($env:KAFKA_BOOTSTRAP) { $env:KAFKA_BOOTSTRAP } else { "127.0.0.1:9092" }
 $env:POSTGRES_HOST = if ($env:POSTGRES_HOST) { $env:POSTGRES_HOST } else { "127.0.0.1" }
 $env:POSTGRES_PORT = if ($env:POSTGRES_PORT) { $env:POSTGRES_PORT } else { "5434" }
@@ -56,7 +58,7 @@ $env:POSTGRES_PASSWORD = if ($env:POSTGRES_PASSWORD) { $env:POSTGRES_PASSWORD } 
 # Reuse brokers already bound on this machine. Do not `docker compose up` rabbitmq/kafka
 # (those compose services are profile `mq` and would collide with :5672 / :9092).
 try { docker start redis | Out-Null; Write-Host "[redis] existing container 'redis'" } catch { Write-Warning "start redis failed" }
-try { docker start rabbitmq-new | Out-Null; Write-Host "[rabbit] existing container 'rabbitmq-new' :5672" } catch { Write-Host "[rabbit] using whatever is on :5672 ($($env:RABBITMQ_URL))" }
+try { docker start yolov8-rabbitmq | Out-Null; Write-Host "[rabbit] existing container 'yolov8-rabbitmq' :5672" } catch { try { docker start rabbitmq-new | Out-Null; Write-Host "[rabbit] existing container 'rabbitmq-new' :5672" } catch { Write-Host "[rabbit] using whatever is on :5672 ($($env:RABBITMQ_URL))" } }
 try { docker start kafka | Out-Null; Write-Host "[kafka] existing container 'kafka' :9092" } catch { Write-Host "[kafka] using :9092" }
 try {
   docker compose up -d postgres | Out-Null

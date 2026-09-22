@@ -107,11 +107,16 @@ class MtxHlsProxyView(APIView):
 
     def get(self, request, mtx_path, filename):
         import re
+        import http.cookiejar
+        import sys
         import urllib.error
         import urllib.request
 
         from django.http import HttpResponse
         from apps.streaming import mediamtx as mtx
+
+        print(f"[mtx-proxy] ENTER mtx_path={mtx_path!r} filename={filename!r} GET={dict(request.GET)}", flush=True)
+        sys.stdout.flush()
 
         path = str(mtx_path or "").strip("/")
         name = Path(filename).name
@@ -120,11 +125,26 @@ class MtxHlsProxyView(APIView):
         if not re.fullmatch(r"[A-Za-z0-9_.-]+", path) or not re.fullmatch(r"[A-Za-z0-9_.-]+", name):
             raise Http404()
         upstream = f"{mtx.hls_base()}/{path}/{name}"
+        # Forward query string (e.g. ?session=xxx) so MediaMTX can resolve
+        # the correct sub-playlist / segment for this session.
+        # NOTE: use request.GET.urlencode() (not urlencode(dict(...))) because
+        # QueryDict values are lists; dict() would stringify the list and break
+        # the session= UUID value → MediaMTX returns 404.
+        if request.GET:
+            upstream += f"?{request.GET.urlencode()}"
+        # MediaMTX HLS session is bound to both ?session=xxx query and
+        # Set-Cookie (cookieCheck / hlsSession) issued on the master playlist.
+        # Reuse a per-path CookieJar so sub-playlist / segment requests
+        # carry the cookies that the master playlist set.
+        jar = _get_mtx_cookie_jar(path)
+        opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(jar))
         try:
-            with urllib.request.urlopen(upstream, timeout=8) as resp:
+            with opener.open(upstream, timeout=8) as resp:
                 data = resp.read()
                 content_type = resp.headers.get("Content-Type") or "application/octet-stream"
-        except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, OSError):
+            print(f"[mtx-proxy] path={path} name={name} upstream={upstream} status={resp.status} cookies={[c.name for c in jar]}")
+        except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, OSError) as e:
+            print(f"[mtx-proxy] FAIL path={path} name={name} upstream={upstream} err={e} cookies={[c.name for c in jar]}")
             raise Http404() from None
         if name.endswith(".m3u8"):
             content_type = "application/vnd.apple.mpegurl"
@@ -147,7 +167,29 @@ def _rewrite_mtx_playlist(text: str, mtx_path: str) -> str:
 
             parsed = urlparse(stripped)
             if parsed.scheme or stripped.startswith("/"):
-                lines.append(prefix + Path(parsed.path or stripped).name)
+                # Preserve query string (e.g. ?session=xxx) so Django proxy
+                # can forward it to MediaMTX upstream.
+                name = Path(parsed.path or stripped).name
+                query = f"?{parsed.query}" if parsed.query else ""
+                lines.append(prefix + name + query)
                 continue
         lines.append(line)
     return "\n".join(lines) + ("\n" if text.endswith("\n") else "")
+
+
+# Per-path CookieJar cache so master playlist and sub-playlist / segment
+# requests share the cookies MediaMTX issues during cookieCheck redirect.
+_mtx_cookie_jars: dict[str, "http.cookiejar.CookieJar"] = {}
+_mtx_cookie_lock = __import__("threading").Lock()
+
+
+def _get_mtx_cookie_jar(path: str) -> "http.cookiejar.CookieJar":
+    """Return a shared CookieJar for the given MediaMTX path."""
+    import http.cookiejar
+
+    with _mtx_cookie_lock:
+        jar = _mtx_cookie_jars.get(path)
+        if jar is None:
+            jar = http.cookiejar.CookieJar()
+            _mtx_cookie_jars[path] = jar
+        return jar

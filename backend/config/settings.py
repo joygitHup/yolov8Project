@@ -195,7 +195,7 @@ JOBS_SYNC = os.environ.get("JOBS_SYNC", "0") in ("1", "true", "yes", "on")
 JOBS_WORKERS = max(1, min(int(os.environ.get("JOBS_WORKERS", "2") or 2), 8))
 JOBS_BACKEND = (os.environ.get("JOBS_BACKEND") or "rabbitmq").strip().lower() or "rabbitmq"
 # Reuse the broker already listening on :5672 (this machine: rabbitmq-new, vhost my_vhost).
-RABBITMQ_URL = os.environ.get("RABBITMQ_URL", "amqp://admin:admin@127.0.0.1:5672/my_vhost")
+RABBITMQ_URL = os.environ.get("RABBITMQ_URL", "amqp://yolov8:yolov8@127.0.0.1:5672/")
 KAFKA_BOOTSTRAP = os.environ.get("KAFKA_BOOTSTRAP", "127.0.0.1:9092")
 KAFKA_ENABLED = os.environ.get("KAFKA_ENABLED", "1") not in ("0", "false", "no", "off")
 KAFKA_TOPIC_FRAMES = os.environ.get("KAFKA_TOPIC_FRAMES", "yolov8.detect.frames")

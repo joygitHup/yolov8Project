@@ -14,6 +14,7 @@ hlsSegmentCount: 7
 hlsSegmentDuration: 1s
 hlsSegmentMaxSize: 50M
 hlsAllowOrigins: []
+# NOTE: cookieCheck redirect is handled by Django MtxHlsProxyView via CookieJar.
 
 # WebRTC ready for future UI (not wired in frontend yet)
 webrtc: yes

@@ -5,7 +5,7 @@ import { get, post, put, del } from '@/utils/request'
 export const authApi = {
   login: (data: { username: string; password: string }) => post('/auth/login', data),
   logout: () => post('/auth/logout'),
-  getCurrentUser: () => get('/auth/me'),
+  getCurrentUser: () => get('/auth/me', undefined, { skipAuthToast: true }),
   changePassword: (data: { oldPassword: string; newPassword: string }) =>
     post('/auth/change-password', data),
 

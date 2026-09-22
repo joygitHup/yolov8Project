@@ -25,7 +25,7 @@ _pub_ch = None
 def _url() -> str:
     from django.conf import settings
 
-    return (getattr(settings, "RABBITMQ_URL", None) or "amqp://admin:admin@127.0.0.1:5672/my_vhost").strip()
+    return (getattr(settings, "RABBITMQ_URL", None) or "amqp://yolov8:yolov8@127.0.0.1:5672/").strip()
 
 
 def _prefix() -> str:

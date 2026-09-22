@@ -4,6 +4,13 @@ import { ElMessage } from 'element-plus'
 import router from '@/router'
 import { useUserStore } from '@/stores/user'
 
+declare module 'axios' {
+  interface AxiosRequestConfig {
+    /** 探活类接口 401 时静默，由路由守卫处理跳转 */
+    skipAuthToast?: boolean
+  }
+}
+
 const request: AxiosInstance = axios.create({
   baseURL: '/api',
   timeout: 30000,
@@ -37,6 +44,12 @@ request.interceptors.response.use(
 
       switch (status) {
         case 401:
+          // 探活接口静默：直接 reject，由调用方（路由守卫 try/catch）处理
+          // 注意：不要在这里 router.push —— 守卫执行时 currentRoute 还是旧路由，
+          // 误判会触发无限导航循环导致页面空白
+          if (error.config?.skipAuthToast) {
+            return Promise.reject(error)
+          }
           if (router.currentRoute.value.path !== '/login') {
             ElMessage.error(data?.error || '登录已过期，请重新登录')
             userStore.logout()

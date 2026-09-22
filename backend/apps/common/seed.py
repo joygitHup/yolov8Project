@@ -61,9 +61,12 @@ def seed_if_empty():
             name=item["name"],
             location=item["location"],
             ip=item["ip"],
-            # Offline seed cams keep empty RTSP so enabling them won't spawn dead workers.
-            # Online seed IPs are placeholders; runtime will not remap them to mystream.
-            rtsp="" if item["status"] == "offline" else f"rtsp://{item['ip']}/stream",
+            # All seed cams keep empty RTSP. When DEMO_RTSP_PUBLISH=1, runtime's
+            # wire_cameras_to_demo_rtsp() rewrites online cams' RTSP to
+            # rtsp://127.0.0.1:8554/mystream so demo_publisher's ffmpeg loop
+            # (vide02.mp4 -> mystream) feeds a real preview source.
+            # For real cameras, set RTSP in the management UI.
+            rtsp="",
             type=item["type"],
             username="admin",
             password="admin123",
