@@ -39,6 +39,7 @@ def default_settings():
             "confidenceThreshold": 0.5,
             "iouThreshold": 0.45,
             "fps": 2,
+            "maxFps": 10,
             "maxDetections": 100,
             "categories": list(DEFAULT_MODEL_CLASS_NAMES),
             "trackingEnabled": True,
@@ -46,6 +47,9 @@ def default_settings():
             "modelPath": DEFAULT_YOLO_WEIGHTS,
             "inferEnabled": True,
             "labelTypeMap": dict(DEFAULT_LABEL_TYPE_MAP),
+        },
+        "streaming": {
+            "prerollSeconds": 15,
         },
         "notification": {
             "enabled": True,
@@ -55,6 +59,21 @@ def default_settings():
             "wework": {"enabled": False, "webhook": "", "levels": ["high", "medium"], "types": ["intrusion", "fire", "parking"]},
         },
         "alertDeduplication": {"enabled": True, "interval": 30},
+        "alertEscalation": {
+            "enabled": True,
+            "lowToMediumMin": 30,   # low → medium 未处理 30 分钟
+            "mediumToHighMin": 60,  # medium → high 未处理 60 分钟
+            "notifyOnEscalate": True,
+        },
+        "whitelist": {
+            "enabled": True,
+            # face matching is optional — downstream yolo-service must attach faceId + faceClear
+            # to each box for faceId rules to fire. When a person is detected but the image
+            # is too blurred for a reliable face match, "alert" means raise as usual,
+            # "review" means create a status=review alert for human triage.
+            "faceUnclearPolicy": "alert",
+            "rules": [],
+        },
         "flywheel": {
             "enabled": True,
             "alertFrames": True,

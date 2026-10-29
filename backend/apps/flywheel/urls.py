@@ -4,6 +4,7 @@ from . import views
 urlpatterns = [
     path("flywheel/stats", views.FlywheelStatsView.as_view()),
     path("flywheel/train/<int:pk>/promote", views.FlywheelTrainPromoteView.as_view()),
+    path("flywheel/train/<int:pk>/cancel", views.FlywheelTrainCancelView.as_view()),
     path("flywheel/train/<int:pk>/rollback", views.FlywheelTrainRollbackView.as_view()),
     path("flywheel/train", views.FlywheelTrainView.as_view()),
     path("flywheel/samples/next", views.FlywheelSampleNextView.as_view()),

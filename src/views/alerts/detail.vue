@@ -274,6 +274,9 @@
             <el-button :icon="Warning" type="danger" :disabled="!!alert?.hasTicket || !!alert?.ticket" @click="openDispatch">
               {{ alert?.hasTicket || alert?.ticket ? '已派发' : '派发工单' }}
             </el-button>
+            <el-button :icon="Check" type="success" v-if="alert?.ticket?.status === 'open'" @click="handleCloseTicket">
+              关闭工单
+            </el-button>
           </div>
         </el-card>
       </el-col>
@@ -303,7 +306,7 @@ import { alertApi } from '@/api'
 import { onRealtime } from '@/utils/realtime'
 import { ElMessage } from 'element-plus'
 import {
-  ArrowLeft, VideoPlay, Download, Share, Printer, Warning, Loading
+  ArrowLeft, VideoPlay, Download, Share, Printer, Warning, Loading, Check
 } from '@element-plus/icons-vue'
 import dayjs from 'dayjs'
 
@@ -703,6 +706,21 @@ async function submitDispatch() {
     /* interceptor */
   } finally {
     dispatchLoading.value = false
+  }
+}
+
+async function handleCloseTicket() {
+  if (!alert.value) return
+  try {
+    const res: any = await alertApi.closeTicket(alert.value.id)
+    if (res.alert) {
+      alert.value = normalizeDetail(res.alert)
+    } else if (res.ticket && alert.value.ticket) {
+      alert.value.ticket = res.ticket
+    }
+    ElMessage.success(res.message || '工单已关闭')
+  } catch {
+    /* interceptor */
   }
 }
 

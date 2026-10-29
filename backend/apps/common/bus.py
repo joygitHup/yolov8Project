@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import logging
 import threading
+import time
 
 logger = logging.getLogger("common.bus")
 
@@ -91,7 +92,17 @@ def produce_alert(payload: dict) -> None:
 
     aid = payload.get("id") or payload.get("alertId")
     safe = json.loads(json.dumps(payload, cls=DjangoJSONEncoder))
-    produce(topic_alerts(), safe, key=str(aid or ""))
+    # App-level retry on top of the producer's internal retries=3, so a
+    # transient broker hiccup doesn't silently drop the alert fact.
+    for attempt in range(2):
+        try:
+            produce(topic_alerts(), safe, key=str(aid or ""))
+            return
+        except Exception:
+            if attempt:
+                raise
+            logger.warning("kafka alerts.created failed, retrying once", exc_info=True)
+            time.sleep(0.3)
 
 
 def start_frames_consumer(handler) -> None:
@@ -125,6 +136,7 @@ def _consume_loop(topic: str, handler) -> None:
     from kafka import KafkaConsumer
     from kafka.errors import KafkaError
 
+    backoff = 2.0  # exponential: 2s → 60s while broker is down
     while not _stop.is_set():
         consumer = None
         try:
@@ -140,6 +152,7 @@ def _consume_loop(topic: str, handler) -> None:
                 max_poll_records=32,
             )
             logger.info("kafka consuming %s", topic)
+            backoff = 2.0  # connected — reset backoff
             while not _stop.is_set():
                 records = consumer.poll(timeout_ms=1000)
                 if not records:
@@ -167,7 +180,8 @@ def _consume_loop(topic: str, handler) -> None:
                     consumer.close()
             except Exception:
                 pass
-        if not _stop.wait(2.0):
+        if not _stop.wait(backoff):
+            backoff = min(backoff * 2, 60.0)
             continue
         break
 

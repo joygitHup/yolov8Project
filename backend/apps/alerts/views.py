@@ -1,4 +1,6 @@
-from django.db.models import Count, Exists, OuterRef, Prefetch, Q
+from datetime import timedelta
+
+from django.db.models import Case, Count, Exists, IntegerField, OuterRef, Prefetch, Q, When
 from django.http import HttpResponse
 from django.utils import timezone
 from rest_framework.exceptions import NotFound, ValidationError
@@ -55,7 +57,7 @@ class AlertListView(APIView):
         status = (request.query_params.get("status") or "").strip()
         if status:
             if status not in ALERT_STATUSES:
-                raise ValidationError("status 无效，可选：unhandled / processing / resolved")
+                raise ValidationError("status 无效，可选：unhandled / processing / review / resolved")
             qs = qs.filter(status=status)
 
         camera_id = (request.query_params.get("cameraId") or "").strip()
@@ -79,6 +81,39 @@ class AlertListView(APIView):
             qs = qs.filter(triggered_at__gte=start)
         if end:
             qs = qs.filter(triggered_at__lte=end)
+
+        face_unclear = (request.query_params.get("faceUnclear") or "").strip().lower()
+        if face_unclear in ("1", "true", "yes"):
+            # JSONField — any detection_box that has faceClear=False.
+            # Python-side filtering (SQLite JSON lacks json_each for this
+            # nested list-of-dicts pattern); bounded to the last 30 days so
+            # the scan stays cheap as the alerts table grows.
+            scan = qs.filter(triggered_at__gte=timezone.now() - timedelta(days=30))
+            # values() avoids the .only()/select_related deferral trap entirely
+            ids = [
+                row["id"]
+                for row in scan.values("id", "detection_boxes")
+                if any(isinstance(b, dict) and b.get("faceClear") is False for b in (row["detection_boxes"] or []))
+            ]
+            qs = qs.filter(id__in=ids)
+
+        sort_by = (request.query_params.get("sortBy") or "").strip()
+        if sort_by == "priority":
+            qs = qs.annotate(
+                _level_rank=Case(
+                    When(level="high", then=0),
+                    When(level="medium", then=1),
+                    default=2,
+                    output_field=IntegerField(),
+                ),
+                _review_rank=Case(
+                    When(status="review", then=1),
+                    default=0,
+                    output_field=IntegerField(),
+                ),
+            ).order_by("_review_rank", "_level_rank", "-triggered_at")
+        elif sort_by == "time":
+            qs = qs.order_by("-triggered_at")
 
         return Response(paginate_qs(qs, request, AlertSerializer))
 
@@ -118,8 +153,8 @@ class AlertHeatmapView(APIView):
 
 def _apply_handle(alert, status, note, operator):
     status = (status or "").strip()
-    if status not in ("processing", "resolved"):
-        raise ValidationError("status 无效，可选：processing / resolved")
+    if status not in ("processing", "resolved", "review"):
+        raise ValidationError("status 无效，可选：processing / resolved / review")
     if alert.status == "resolved":
         raise ValidationError("告警已处理，无法再次变更")
     if alert.status == "processing" and status == "processing":
@@ -133,6 +168,11 @@ def _apply_handle(alert, status, note, operator):
         alert.resolved_at = timezone.now()
         alert.resolved_by = getattr(operator, "username", None) or "system"
         alert.resolved_note = note
+        # Auto-close any open ticket when the alert is resolved
+        try:
+            services.close_ticket_for_alert(alert, getattr(operator, "username", None) or "system", note or "")
+        except Exception:
+            pass
     elif note:
         alert.resolved_note = note
     alert.save()
@@ -296,6 +336,30 @@ class AlertDispatchView(APIView):
         return Response({
             "created": created,
             "message": "工单已派发" if created else "该告警已有工单",
+            "ticket": services.serialize_ticket(ticket),
+            "alert": payload,
+        })
+
+
+class AlertTicketCloseView(APIView):
+    """Manual close for an open ticket on a still-unresolved alert."""
+    permission_classes = [IsAuthenticated, IsAdminOrOperator]
+
+    def post(self, request, pk):
+        alert = _get_alert(pk)
+        note = (request.data.get("note") or "").strip()
+        ticket = services.close_ticket_for_alert(
+            alert,
+            operator=getattr(request.user, "username", None) or "system",
+            note=note,
+        )
+        if not ticket:
+            raise NotFound("该告警没有待关闭的工单")
+        alert = _get_alert(pk)
+        payload = AlertSerializer(alert, context={"detail": True}).data
+        broadcast("alert:updated", payload)
+        return Response({
+            "message": "工单已关闭",
             "ticket": services.serialize_ticket(ticket),
             "alert": payload,
         })

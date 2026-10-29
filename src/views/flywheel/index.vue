@@ -10,6 +10,7 @@
               <div class="header-stats">
                 <el-button text type="primary" @click="goDetection">采集设置</el-button>
                 <el-button type="primary" :loading="trainBusy" :disabled="trainBusy" @click="startTrain">开始微调</el-button>
+                <el-button v-if="trainBusy" type="danger" plain @click="cancelTrain">取消训练</el-button>
                 <el-tag type="warning">待审 {{ stats.pending }}</el-tag>
                 <el-tag type="success">已通过 {{ stats.approved }}</el-tag>
                 <el-tag type="info">已丢弃 {{ stats.discarded }}</el-tag>
@@ -76,6 +77,13 @@
                   </el-tag>
                 </div>
                 <div class="meta-row"><span>置信度</span><b>{{ (sample.maxConf * 100).toFixed(0) }}%</b></div>
+                <div v-if="sample.quality" class="meta-row">
+                  <span>标注质量</span>
+                  <el-tag size="small" :type="qualityTagType">{{ sample.quality.score }} 分</el-tag>
+                </div>
+                <div v-if="sample.quality?.issues?.length" class="quality-issues">
+                  <div v-for="issue in sample.quality.issues" :key="issue">· {{ issue }}</div>
+                </div>
               </div>
 
               <div class="panel-title">当前类别</div>
@@ -144,6 +152,7 @@ type Sample = {
   maxConf: number
   boxes?: Box[]
   classNames?: string[]
+  quality?: { score: number; issues: string[]; boxCount: number }
 }
 
 const PALETTE = ['#1677ff', '#f5222d', '#52c41a', '#fa8c16', '#722ed1', '#13c2c2', '#eb2f96']
@@ -161,6 +170,7 @@ const queue = ref<Sample[]>([])
 const stats = reactive({ pending: 0, approved: 0, discarded: 0 })
 const trainBusy = ref(false)
 const trainMsg = ref('')
+const trainRunId = ref<number | null>(null)
 let trainTimer: number | null = null
 
 const stageRef = ref<HTMLElement | null>(null)
@@ -202,6 +212,13 @@ let draft: BBox | null = null
 let observer: ResizeObserver | null = null
 
 const selected = computed(() => boxes.value.find((b) => b.id === selectedId.value) || null)
+
+const qualityTagType = computed(() => {
+  const score = sample.value?.quality?.score ?? 100
+  if (score >= 80) return 'success'
+  if (score >= 60) return 'warning'
+  return 'danger'
+})
 
 function colorOf(label: string) {
   const i = Math.max(0, classNames.value.indexOf(label))
@@ -606,7 +623,8 @@ async function saveBoxes() {
   if (!sample.value) return
   busy.value = true
   try {
-    await configApi.updateFlywheelSample(sample.value.id, { boxes: boxes.value })
+    const res: any = await configApi.updateFlywheelSample(sample.value.id, { boxes: boxes.value })
+    if (sample.value && res?.quality) sample.value.quality = res.quality
     ElMessage.success('检测框已保存')
   } finally {
     busy.value = false
@@ -683,6 +701,7 @@ async function refreshTrain() {
     const tr: any = await configApi.getFlywheelTrain()
     trainBusy.value = !!tr?.busy
     trainMsg.value = tr?.run?.message || ''
+    trainRunId.value = tr?.run?.id ?? null
     if (trainBusy.value) {
       if (trainTimer == null) {
         trainTimer = window.setInterval(refreshTrain, 4000)
@@ -701,7 +720,20 @@ async function startTrain() {
     const res: any = await configApi.startFlywheelTrain()
     trainBusy.value = true
     trainMsg.value = res?.message || '训练已开始'
+    trainRunId.value = res?.run?.id ?? null
     ElMessage.success(trainMsg.value)
+    refreshTrain()
+  } catch {
+    /* 错误已处理 */
+  }
+}
+
+async function cancelTrain() {
+  if (!trainRunId.value) return
+  try {
+    const res: any = await configApi.cancelFlywheelTrain(trainRunId.value)
+    trainMsg.value = res?.message || '已请求取消训练'
+    ElMessage.warning(trainMsg.value)
     refreshTrain()
   } catch {
     /* 错误已处理 */
@@ -826,6 +858,15 @@ onUnmounted(() => {
 .meta-row b {
   color: #111827;
   font-weight: 600;
+}
+.quality-issues {
+  font-size: 12px;
+  color: #d97706;
+  background: #fffbeb;
+  border-radius: 6px;
+  padding: 6px 8px;
+  margin-bottom: 8px;
+  line-height: 1.6;
 }
 .panel-title {
   margin: 14px 0 8px;

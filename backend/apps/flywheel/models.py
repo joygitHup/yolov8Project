@@ -37,6 +37,7 @@ class FlywheelTrainRun(models.Model):
         ("promoted", "已上线"),
         ("rejected", "未上线"),
         ("failed", "失败"),
+        ("cancelled", "已取消"),
     )
 
     status = models.CharField(max_length=16, choices=STATUS_CHOICES, default="queued", db_index=True)

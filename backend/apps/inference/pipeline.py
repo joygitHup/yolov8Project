@@ -17,7 +17,7 @@ from apps.inference.runtime import set_frame
 from apps.inference.strategy import allowed_alert_types, match_strategy, should_infer
 from apps.realtime.broadcast import broadcast
 from apps.systemcfg.defaults import DEFAULT_LABEL_TYPE_MAP
-from apps.systemcfg.services import get_section
+from apps.systemcfg.services import get_section, whitelist_match
 
 logger = logging.getLogger("inference")
 
@@ -35,6 +35,9 @@ _remote_started: set[int] = set()
 _remote_model_path: str | None = None
 _model_ready_cache = False
 _COOLDOWN_SEC = 60.0
+_yolo_fail_consecutive = 0   # count consecutive health=None
+_YOLO_FAIL_THRESHOLD = 3      # raise alarm after N consecutive failures
+_service_alert_active = {}    # key: "yolo_down" → alert id
 _UNREACHABLE_HINTS = (
     "cannot open",
     "reconnect failed",
@@ -221,6 +224,7 @@ def _deduped(camera_id, alert_type):
 
 def _maybe_alert(camera, detections, params=None):
     params = params or get_section("detection")
+    cfg = get_section("whitelist")
     grouped = {}
     for det in detections:
         alert_type = det.get("alertType") or _alert_type_for_label(det.get("label"), params)
@@ -233,7 +237,26 @@ def _maybe_alert(camera, detections, params=None):
         strategy = match_strategy(camera, alert_type)
         if not strategy or _deduped(camera.id, alert_type):
             continue
-        best = max(boxes, key=lambda x: x["confidence"])
+
+        # Apply whitelist filters per-box. A box that explicitly matches a rule
+        # gets suppressed; a box that is only flagged as face-unclear (policy=review)
+        # lands in the "review" bucket so the alert can be created as status=review.
+        filtered = []
+        review_boxes = []
+        for b in boxes:
+            result = whitelist_match(camera.id, alert_type, b, cfg=cfg)
+            if result == "suppress":
+                continue
+            if result == "review":
+                review_boxes.append(b)
+            else:
+                filtered.append(b)
+
+        target = filtered or review_boxes
+        if not target:
+            continue
+        status = "review" if (review_boxes and not filtered) else "unhandled"
+        best = max(target, key=lambda x: x["confidence"])
         level = "high" if alert_type == "fire" else (strategy.alert_level or "medium")
         alert = Alert.objects.create(
             camera=camera,
@@ -241,7 +264,7 @@ def _maybe_alert(camera, detections, params=None):
             type=alert_type,
             level=level,
             description=_TYPE_DESC.get(alert_type, "检测到异常目标"),
-            status="unhandled",
+            status=status,
             confidence=best["confidence"],
             snapshot_url="",
             image_url="",
@@ -254,8 +277,11 @@ def _maybe_alert(camera, detections, params=None):
                     "h": b["bbox"]["h"],
                     "label": b["label"],
                     "confidence": b["confidence"],
+                    "trackId": b.get("trackId", ""),
+                    "faceId": b.get("faceId", ""),
+                    "faceClear": b.get("faceClear"),
                 }
-                for b in boxes
+                for b in target
             ],
             triggered_at=timezone.now(),
         )
@@ -279,7 +305,10 @@ def _maybe_alert(camera, detections, params=None):
                 bus.produce_alert(payload)
         except Exception:
             logger.exception("kafka alerts.created failed id=%s", alert.id)
-        dispatch(alert)
+        try:
+            dispatch(alert)
+        except Exception:
+            logger.exception("notify dispatch enqueue failed id=%s", alert.id)
         try:
             from apps.flywheel.collector import on_alert
 
@@ -490,7 +519,9 @@ def _sync_remote_cameras(active_cameras, params, model_ready: bool):
     conf = float(params.get("confidenceThreshold") or 0.5)
     iou = float(params.get("iouThreshold") or 0.45)
     max_det = int(params.get("maxDetections") or 100)
-    fps = max(0.5, min(float(params.get("fps") or 1), 2.0))
+    fps_raw = float(params.get("fps") or 1)
+    max_fps = float(params.get("maxFps") or 10)
+    fps = max(0.5, min(fps_raw, max_fps))
 
     for camera in active_cameras:
         cid = int(camera.id)
@@ -536,7 +567,7 @@ def _sync_remote_cameras(active_cameras, params, model_ready: bool):
 
 
 def _loop_remote():
-    global _model_ready_cache
+    global _model_ready_cache, _yolo_fail_consecutive
     logger.info("推理编排器已启动（remote YOLO 微服务 + 布防策略门控）")
     while not _stop.wait(2.0):
         close_old_connections()
@@ -581,7 +612,31 @@ def _loop_remote():
                     })
 
             if health is None:
-                logger.warning("YOLO service unavailable at %s", remote.service_url())
+                _yolo_fail_consecutive += 1
+                logger.warning("YOLO service unavailable (%s consecutive) at %s", _yolo_fail_consecutive, remote.service_url())
+                # Raise a service alert if unavailable too long
+                if _yolo_fail_consecutive >= _YOLO_FAIL_THRESHOLD and not _service_alert_active.get("yolo_down"):
+                    try:
+                        from apps.alerts.models import Alert
+                        from apps.realtime.broadcast import broadcast
+
+                        alert = Alert.objects.create(
+                            camera=None,
+                            camera_name="系统服务",
+                            type="service",
+                            level="high",
+                            description=f"YOLO 推理服务连续 {_yolo_fail_consecutive} 次不可用，所有摄像头暂停检测",
+                            confidence=1.0,
+                            status="unhandled",
+                            snapshot_url="",
+                            video_url="",
+                            detection_boxes=[],
+                            triggered_at=timezone.now(),
+                        )
+                        _service_alert_active["yolo_down"] = alert.id
+                        logger.error("YOLO service alarm raised #%s", alert.id)
+                    except Exception as exc:
+                        logger.exception("failed to create yolo-down service alert: %s", exc)
                 for camera in active:
                     set_frame(camera.id, {
                         "cameraId": camera.id,
@@ -592,6 +647,28 @@ def _loop_remote():
                         "modelReady": False,
                     })
                 continue
+
+            # Health recovered — reset counter and auto-resolve the service alert
+            if _yolo_fail_consecutive > 0:
+                logger.info("YOLO service recovered after %s failed probes", _yolo_fail_consecutive)
+                _yolo_fail_consecutive = 0
+                alert_id = _service_alert_active.pop("yolo_down", None)
+                if alert_id:
+                    try:
+                        from apps.alerts.models import Alert
+                        from apps.alerts.services import close_ticket_for_alert
+
+                        alert = Alert.objects.filter(pk=alert_id).first()
+                        if alert and alert.status != "resolved":
+                            alert.status = "resolved"
+                            alert.resolved_at = timezone.now()
+                            alert.resolved_by = "system"
+                            alert.resolved_note = "YOLO 推理服务已恢复"
+                            alert.save(update_fields=["status", "resolved_at", "resolved_by", "resolved_note", "updated_at"])
+                            close_ticket_for_alert(alert, "system", "服务已恢复，告警自动关闭")
+                            logger.info("service alert #%s auto-resolved", alert_id)
+                    except Exception as exc:
+                        logger.exception("failed to auto-resolve yolo-down alert #%s: %s", alert_id, exc)
 
             _sync_remote_cameras(active, params, _model_ready_cache)
         except Exception:

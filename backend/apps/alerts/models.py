@@ -2,9 +2,19 @@ from django.db import models
 
 
 class Alert(models.Model):
-    TYPE_CHOICES = (("intrusion", "区域入侵"), ("parking", "违停占道"), ("fire", "火灾隐患"))
+    TYPE_CHOICES = (
+        ("intrusion", "区域入侵"),
+        ("parking", "违停占道"),
+        ("fire", "火灾隐患"),
+        ("service", "服务异常"),
+    )
     LEVEL_CHOICES = (("high", "高危"), ("medium", "中危"), ("low", "低危"))
-    STATUS_CHOICES = (("unhandled", "待处理"), ("processing", "处理中"), ("resolved", "已处理"))
+    STATUS_CHOICES = (
+        ("unhandled", "待处理"),
+        ("processing", "处理中"),
+        ("resolved", "已处理"),
+        ("review", "待确认"),
+    )
 
     camera = models.ForeignKey("cameras.Camera", null=True, on_delete=models.SET_NULL, related_name="alerts")
     camera_name = models.CharField(max_length=128, blank=True, default="")
@@ -27,6 +37,24 @@ class Alert(models.Model):
     class Meta:
         db_table = "alerts"
         ordering = ["-triggered_at"]
+        indexes = [
+            models.Index(fields=["-triggered_at"], name="alerts_triggered_idx"),
+            models.Index(fields=["status", "-triggered_at"], name="alerts_status_idx"),
+            models.Index(fields=["type", "-triggered_at"], name="alerts_type_idx"),
+        ]
+
+    def save(self, *args, **kwargs):
+        """
+        `auto_now` is skipped when `save(update_fields=[...])` omits
+        `updated_at`. Always include it so every alert mutation bumps the
+        timestamp clients rely on for cache/realtime refresh.
+        """
+        update_fields = kwargs.get("update_fields")
+        if update_fields is not None:
+            fields = set(update_fields)
+            fields.add("updated_at")
+            kwargs["update_fields"] = list(fields)
+        return super().save(*args, **kwargs)
 
 
 class AlertAction(models.Model):

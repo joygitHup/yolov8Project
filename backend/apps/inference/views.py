@@ -5,7 +5,7 @@ from apps.common.apiview import APIView
 from rest_framework.exceptions import AuthenticationFailed, ValidationError
 
 from apps.inference.pipeline import ingest_detections
-from apps.inference.remote import ingest_token
+from apps.inference.remote import ingest_token, ingest_tokens_accepted
 
 
 class InferenceIngestView(APIView):
@@ -15,9 +15,9 @@ class InferenceIngestView(APIView):
     permission_classes = [AllowAny]
 
     def post(self, request):
-        expected = ingest_token()
+        accepted = ingest_tokens_accepted()
         got = (request.headers.get("X-Ingest-Token") or "").strip()
-        if not expected or got != expected:
+        if not accepted or got not in accepted:
             raise AuthenticationFailed("invalid ingest token")
 
         camera_id = request.data.get("cameraId")

@@ -111,3 +111,14 @@ runs/
 
 # CodeGraph index
 .codegraph
+# secrets & privacy
+cookies.txt
+yolo-service/face_lib/
+
+# local artifacts
+backend/data/_hls_test.m3u8
+vite.config.ts.timestamp-*.mjs
+.workbuddy/
+docs/.workbuddy/
+docs/_build_deck.py
+yolo-service/yolov8n.pt

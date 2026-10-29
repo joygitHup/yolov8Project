@@ -93,6 +93,7 @@ def build_summary():
         total=Count("id"),
         unhandled=Count("id", filter=Q(status="unhandled")),
         processing=Count("id", filter=Q(status="processing")),
+        review=Count("id", filter=Q(status="review")),
         resolved=Count("id", filter=Q(status="resolved")),
         intrusion=Count("id", filter=Q(type="intrusion")),
         parking=Count("id", filter=Q(type="parking")),
@@ -127,12 +128,14 @@ def build_summary():
         "total": total_alerts,
         "unhandled": int(alert_agg["unhandled"] or 0),
         "processing": int(alert_agg["processing"] or 0),
+        "review": int(alert_agg["review"] or 0),
         "resolved": resolved,
         "resolvedRate": _pct(resolved, total_alerts),
     }
     status_counts = {
         "unhandled": alerts["unhandled"],
         "processing": alerts["processing"],
+        "review": alerts["review"],
         "resolved": alerts["resolved"],
     }
     type_counts = {

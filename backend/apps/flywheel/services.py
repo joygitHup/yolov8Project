@@ -50,6 +50,75 @@ def ensure_boxes(sample: FlywheelSample) -> list:
     return boxes
 
 
+def _iou(a: dict, b: dict) -> float:
+    ab = a.get("bbox") or {}
+    bb = b.get("bbox") or {}
+    ax, ay = float(ab.get("x") or 0), float(ab.get("y") or 0)
+    aw, ah = float(ab.get("w") or 0), float(ab.get("h") or 0)
+    bx, by = float(bb.get("x") or 0), float(bb.get("y") or 0)
+    bw, bh = float(bb.get("w") or 0), float(bb.get("h") or 0)
+    inter_w = max(0.0, min(ax + aw, bx + bw) - max(ax, bx))
+    inter_h = max(0.0, min(ay + ah, by + bh) - max(ay, by))
+    inter = inter_w * inter_h
+    union = aw * ah + bw * bh - inter
+    return inter / union if union > 0 else 0.0
+
+
+def quality_score(boxes: list) -> dict:
+    """
+    Heuristic annotation quality (0-100). Derived from the current boxes only
+    (not persisted) — used to help reviewers spot sloppy labels before they
+    enter the training set.
+    """
+    boxes = boxes or []
+    n = len(boxes)
+    if n == 0:
+        return {"score": 40, "issues": ["未标注任何目标（确属空场景可忽略）"], "boxCount": 0}
+
+    score = 70.0
+    issues: list[str] = []
+    confs = [float(b.get("confidence") or 0) for b in boxes]
+    avg_conf = sum(confs) / n
+    if avg_conf >= 0.8:
+        score += 15
+    elif avg_conf >= 0.6:
+        score += 10
+    elif avg_conf >= 0.4:
+        score += 5
+    else:
+        issues.append(f"平均置信度偏低（{avg_conf:.2f}）")
+
+    tiny = huge = dup = 0
+    for b in boxes:
+        bb = b.get("bbox") or {}
+        w = float(bb.get("w") or 0)
+        h = float(bb.get("h") or 0)
+        if w * h < 0.0005:
+            tiny += 1
+        if w > 0.9 and h > 0.9:
+            huge += 1
+    for i in range(n):
+        for j in range(i + 1, n):
+            if boxes[i].get("label") != boxes[j].get("label"):
+                continue
+            if _iou(boxes[i], boxes[j]) > 0.8:
+                dup += 1
+
+    if tiny:
+        issues.append(f"{tiny} 个框面积过小（<0.05% 画面）")
+        score -= min(24, 8 * tiny)
+    if huge:
+        issues.append(f"{huge} 个框几乎覆盖全画面")
+        score -= min(20, 10 * huge)
+    if dup:
+        issues.append(f"{dup} 组同类框高度重叠（疑似重复标注）")
+        score -= min(24, 12 * dup)
+    if n > 50:
+        issues.append(f"单图 {n} 个框，数量偏多")
+
+    return {"score": int(max(0, min(100, round(score)))), "issues": issues, "boxCount": n}
+
+
 def sample_to_dict(sample: FlywheelSample, *, with_boxes=False, names=None, camera_names=None) -> dict:
     names = names if names is not None else class_names()
     if camera_names is not None:
@@ -73,7 +142,9 @@ def sample_to_dict(sample: FlywheelSample, *, with_boxes=False, names=None, came
         "classNames": names,
     }
     if with_boxes:
-        data["boxes"] = ensure_boxes(sample)
+        boxes = ensure_boxes(sample)
+        data["boxes"] = boxes
+        data["quality"] = quality_score(boxes)
     return data
 
 

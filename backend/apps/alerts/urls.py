@@ -9,6 +9,7 @@ urlpatterns = [
     path("<int:pk>/evidence", views.AlertEvidenceView.as_view()),
     path("<int:pk>/report", views.AlertReportView.as_view()),
     path("<int:pk>/dispatch", views.AlertDispatchView.as_view()),
+    path("<int:pk>/ticket/close", views.AlertTicketCloseView.as_view()),
     path("<int:pk>", views.AlertDetailView.as_view()),
     path("", views.AlertListView.as_view()),
 ]

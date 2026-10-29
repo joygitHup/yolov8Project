@@ -1,4 +1,6 @@
 import copy
+import time
+
 from apps.systemcfg.defaults import default_settings
 from apps.systemcfg.models import SystemSetting
 
@@ -13,7 +15,24 @@ def get_all_settings():
     return normalize_settings(data)
 
 
+_SECTION_CACHE = {}
+_SECTION_CACHE_AT = {}
+_SECTION_TTL = 5.0  # seconds; save_section() invalidates the local cache
+
+
 def get_section(key):
+    now = time.monotonic()
+    hit = _SECTION_CACHE_AT.get(key)
+    if hit is not None and now - hit < _SECTION_TTL and key in _SECTION_CACHE:
+        return copy.deepcopy(_SECTION_CACHE[key])
+    value = _compute_section(key)
+    _SECTION_CACHE[key] = value
+    _SECTION_CACHE_AT[key] = now
+    # deep-copy out so callers can mutate freely without poisoning the cache
+    return copy.deepcopy(value)
+
+
+def _compute_section(key):
     defaults = default_settings().get(key, {})
     row = SystemSetting.objects.filter(key=key).first()
     if not row:
@@ -35,6 +54,8 @@ def get_section(key):
 
 def save_section(key, value):
     SystemSetting.objects.update_or_create(key=key, defaults={"value": value})
+    _SECTION_CACHE.pop(key, None)
+    _SECTION_CACHE_AT.pop(key, None)
     return value
 
 
@@ -172,12 +193,155 @@ def normalize_flywheel(raw):
     }
 
 
+def _clean_list(value) -> list:
+    if not isinstance(value, list):
+        return []
+    out = []
+    for item in value:
+        if item is None:
+            continue
+        text = str(item).strip()
+        if text:
+            out.append(text)
+    return out
+
+
+def _clean_int_list(value) -> list:
+    if not isinstance(value, list):
+        return []
+    out = []
+    for item in value:
+        try:
+            out.append(int(item))
+        except (TypeError, ValueError):
+            continue
+    return out
+
+
+def normalize_whitelist(raw):
+    """Validate and sanitize whitelist section.
+
+    Each rule must have:
+      - id (generated if missing)
+      - name
+      - enabled
+      - alertTypes / labels / trackIds / faceIds / cameras (all optional list filters)
+      - maxConfidence (optional float cap — only suppress when det confidence <= cap)
+    faceUnclearPolicy: "alert" (default, fire alert even if face match uncertain) | "review" (create review-status alert) | "suppress"
+    """
+    import uuid as _uuid
+
+    raw = raw or {}
+    face_policy = str(raw.get("faceUnclearPolicy") or "alert").strip()
+    if face_policy not in ("alert", "review", "suppress"):
+        face_policy = "alert"
+    rules = []
+    seen_ids = set()
+    for item in raw.get("rules") or []:
+        if not isinstance(item, dict):
+            continue
+        rid = str(item.get("id") or "").strip() or _uuid.uuid4().hex[:12]
+        while rid in seen_ids:
+            rid = _uuid.uuid4().hex[:12]
+        seen_ids.add(rid)
+        max_conf = item.get("maxConfidence")
+        if max_conf is None or max_conf == "":
+            max_conf_val = None
+        else:
+            try:
+                max_conf_val = round(_as_float(max_conf, None, low=0.05, high=0.99), 2)
+            except Exception:
+                max_conf_val = None
+        rules.append({
+            "id": rid,
+            "name": str(item.get("name") or "").strip() or "未命名规则",
+            "enabled": _as_bool(item.get("enabled"), True),
+            "alertTypes": _clean_list(item.get("alertTypes")),
+            "labels": _clean_list(item.get("labels")),
+            "trackIds": _clean_list(item.get("trackIds")),
+            "faceIds": _clean_list(item.get("faceIds")),
+            "cameras": _clean_int_list(item.get("cameras")),
+            "maxConfidence": max_conf_val,
+        })
+    return {
+        "enabled": _as_bool(raw.get("enabled"), True),
+        "faceUnclearPolicy": face_policy,
+        "rules": rules,
+    }
+
+
+def whitelist_match(camera_id: int, alert_type: str, det: dict, cfg=None) -> str:
+    """Decide whether a single detection box is whitelisted.
+
+    Returns:
+      "suppress" — box is explicitly whitelisted by label / trackId / faceId / camera → skip alert
+      "review"   — face unclear + cfg.faceUnclearPolicy=="review" → raise a review-status alert
+      None       — not whitelisted, fire alert normally
+
+    The caller in pipeline._maybe_alert groups boxes by alert_type; after filtering
+    via this function it either creates an Alert (possibly with status="review")
+    or short-circuits.
+    """
+    import logging
+
+    cfg = cfg or get_section("whitelist")
+    if not cfg.get("enabled", True):
+        return None
+    labels = cfg.get("rules") or []
+    label = str(det.get("label") or "").strip()
+    conf = float(det.get("confidence") or 0)
+    track_id = str(det.get("trackId") or "").strip()
+    face_id = str(det.get("faceId") or "").strip()
+    face_clear = det.get("faceClear")  # True / False / None (no face match attempt)
+
+    # Unclear face → apply faceUnclearPolicy BEFORE rule scan. If policy is "alert"
+    # (default), fall through to normal rule matching so we can still suppress on
+    # label alone; if "review", this single box becomes "review".
+    if face_clear is False:
+        policy = str(cfg.get("faceUnclearPolicy") or "alert").strip()
+        if policy == "suppress":
+            return "suppress"
+        if policy == "review":
+            return "review"
+        # policy == "alert": fall through
+
+    for rule in labels:
+        if not rule.get("enabled", True):
+            continue
+        types = rule.get("alertTypes") or []
+        if types and alert_type not in types:
+            continue
+        labs = rule.get("labels") or []
+        if labs and label not in labs:
+            continue
+        tids = rule.get("trackIds") or []
+        if tids and track_id not in tids:
+            continue
+        fids = rule.get("faceIds") or []
+        if fids and face_id not in fids:
+            continue
+        cams = rule.get("cameras") or []
+        if cams and camera_id not in cams:
+            continue
+        max_c = rule.get("maxConfidence")
+        if max_c is not None and conf > float(max_c):
+            continue
+        # All rule filters matched → suppress
+        logging.getLogger("systemcfg").info(
+            "whitelist hit rule=%s camera=%s type=%s label=%s trackId=%s faceId=%s",
+            rule.get("name"), camera_id, alert_type, label, track_id, face_id,
+        )
+        return "suppress"
+    return None
+
+
 def normalize_settings(data=None):
     """
     Canonical settings payload (camelCase sections):
       system: { title, logo, version }
       alertDeduplication: { enabled, interval }  # interval seconds
       detection: { confidenceThreshold, iouThreshold, fps, ... }
+      whitelist: { enabled, faceUnclearPolicy, rules[] }
       flywheel: { enabled, alertFrames, uncertainFrames, uncertainLow, uncertainHigh, quotaPerCameraHour, sampleIntervalSec }
       notification: { ... }
     """
@@ -189,6 +353,7 @@ def normalize_settings(data=None):
             deep_merge(base["alertDeduplication"], data.get("alertDeduplication") or {})
         ),
         "detection": normalize_detection(deep_merge(base["detection"], data.get("detection") or {})),
+        "whitelist": normalize_whitelist(deep_merge(base["whitelist"], data.get("whitelist") or {})),
         "flywheel": normalize_flywheel(deep_merge(base["flywheel"], data.get("flywheel") or {})),
         "notification": deep_merge(base["notification"], data.get("notification") or {}),
     }
@@ -204,7 +369,7 @@ def apply_settings_patch(patch):
         raise ValueError("请求体必须为对象")
 
     current = get_all_settings()
-    allowed = ("system", "alertDeduplication", "detection", "flywheel", "notification")
+    allowed = ("system", "alertDeduplication", "detection", "whitelist", "flywheel", "notification")
     touched = False
 
     for key in allowed:
@@ -223,11 +388,13 @@ def apply_settings_patch(patch):
             merged = normalize_dedup(merged)
         elif key == "detection":
             merged = normalize_detection(merged, user_set=True)
+        elif key == "whitelist":
+            merged = normalize_whitelist(merged)
         elif key == "flywheel":
             merged = normalize_flywheel(merged)
         save_section(key, merged)
 
     if not touched:
-        raise ValueError("未提供可更新字段，可选：system / alertDeduplication / detection / flywheel / notification")
+        raise ValueError("未提供可更新字段，可选：system / alertDeduplication / detection / whitelist / flywheel / notification")
 
     return get_all_settings()

@@ -123,6 +123,16 @@ class DemoPublisher:
                     proc.kill()
                 except Exception:
                     pass
+            # On Windows ffmpeg often spawns child console windows that
+            # survive the parent. Nuke the whole process tree by pid.
+            if os.name == "nt" and proc.poll() is None:
+                try:
+                    subprocess.call(
+                        ["taskkill", "/F", "/T", "/PID", str(proc.pid)],
+                        timeout=5,
+                    )
+                except Exception:
+                    pass
 
 
 demo_publisher = DemoPublisher()

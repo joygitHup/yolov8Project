@@ -6,6 +6,7 @@ from rest_framework.response import Response
 from apps.common.apiview import APIView
 
 from django.conf import settings as dj_settings
+from django.http import HttpResponse
 from django.utils import timezone
 
 from apps.accounts.models import User
@@ -13,6 +14,7 @@ from apps.alerts.models import Alert
 from apps.cameras.models import Camera
 from apps.common.permissions import IsAdminOrOperator, IsAdminRole
 from apps.common.sysmetrics import collect_system_metrics
+from apps.inference import remote as yolo_remote
 from apps.inference.notify import CHANNEL_LABEL, send_channel
 from apps.realtime.broadcast import broadcast
 from .models import NotificationLog, Strategy
@@ -190,6 +192,39 @@ class NotificationLogView(APIView):
         })
 
 
+class WhitelistView(APIView):
+    """Per-camera / per-label / per-face whitelist that suppresses or marks alerts.
+
+    Returns current whitelist config. PUT accepts the full section object with
+    rules; each rule may have id (kept if provided), name, enabled, alertTypes,
+    labels, trackIds, faceIds, cameras, maxConfidence. Rules are validated by
+    normalize_whitelist before save.
+    """
+
+    def get_permissions(self):
+        if self.request.method == "PUT":
+            return [IsAuthenticated(), IsAdminRole()]
+        return [IsAuthenticated()]
+
+    def get(self, request):
+        from apps.systemcfg.services import normalize_whitelist
+
+        raw = get_section("whitelist") or {}
+        return Response(normalize_whitelist(raw))
+
+    def put(self, request):
+        from apps.systemcfg.services import normalize_whitelist
+
+        patch = dict(request.data or {})
+        try:
+            merged = normalize_whitelist(patch)
+        except Exception as exc:
+            raise ValidationError(f"白名单配置无效：{exc}")
+        save_section("whitelist", merged)
+        _publish("whitelist", {"whitelist": merged})
+        return Response({"message": "白名单配置已更新并立即生效", "whitelist": merged})
+
+
 class StrategyListCreateView(APIView):
     def get_permissions(self):
         if self.request.method == "POST":
@@ -323,3 +358,84 @@ class SystemInfoView(APIView):
                 "notification": get_section("notification"),
             }),
         })
+
+
+# ---------------------------------------------------------------------------
+# 人脸特征库（注册/删除由 yolo-service 执行，这里做鉴权代理）
+# ---------------------------------------------------------------------------
+
+def _remote_error(exc: RuntimeError) -> Response:
+    """Map yolo-service RuntimeError to a clean JSON response."""
+    import json
+    import re
+
+    msg = str(exc)
+    status = 502
+    detail = msg
+    m = re.search(r"HTTP (\d{3}):\s*(.*)", msg)
+    if m:
+        code = int(m.group(1))
+        status = code if 400 <= code < 600 else 502
+        try:
+            payload = json.loads(m.group(2))
+            detail = payload.get("detail") or msg
+        except Exception:
+            detail = m.group(2) or msg
+    return Response({"error": detail}, status=status)
+
+
+class FaceLibraryView(APIView):
+    """人脸库列表（登录即可）/ 注册（仅管理员）。照片经这里转发给 yolo-service。"""
+
+    def get_permissions(self):
+        if self.request.method == "POST":
+            return [IsAuthenticated(), IsAdminRole()]
+        return [IsAuthenticated()]
+
+    def get(self, request):
+        try:
+            return Response({"list": yolo_remote.list_faces()})
+        except RuntimeError as exc:
+            return _remote_error(exc)
+
+    def post(self, request):
+        name = (request.data.get("name") or "").strip()
+        upload = request.FILES.get("image")
+        if not name:
+            return Response({"error": "姓名不能为空"}, status=400)
+        if upload is None:
+            return Response({"error": "请上传照片"}, status=400)
+        if upload.size and upload.size > 10 * 1024 * 1024:
+            return Response({"error": "照片不能超过 10MB"}, status=400)
+        ctype = (upload.content_type or "").lower()
+        if ctype and not ctype.startswith("image/"):
+            return Response({"error": "仅支持图片文件（jpg/png）"}, status=400)
+        try:
+            result = yolo_remote.enroll_face(
+                name, upload.read(), upload.name or "upload.jpg",
+                upload.content_type or "image/jpeg",
+            )
+            return Response(result)
+        except RuntimeError as exc:
+            return _remote_error(exc)
+
+
+class FaceDetailView(APIView):
+    permission_classes = [IsAuthenticated, IsAdminRole]
+
+    def delete(self, request, face_id):
+        try:
+            yolo_remote.delete_face(face_id)
+            return Response({"deleted": face_id})
+        except RuntimeError as exc:
+            return _remote_error(exc)
+
+
+class FacePhotoView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, face_id):
+        data = yolo_remote.face_photo(face_id)
+        if not data:
+            raise NotFound("无照片")
+        return HttpResponse(data, content_type="image/jpeg")

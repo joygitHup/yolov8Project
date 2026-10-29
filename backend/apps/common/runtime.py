@@ -83,19 +83,41 @@ def start_runtime() -> None:
 
 
 def _preview_loop() -> None:
+    """
+    Process streaming start/stop commands fast (every 2s), but only do the
+    full "ensure every enabled camera has a stream" reconciliation every
+    ~30s. This avoids serial hls_ready() probes blocking when there are
+    dozens of cameras.
+    """
     from apps.streaming.manager import stream_manager
     from apps.streaming.publisher import demo_publisher
+    from apps.streaming import preroll
 
     ticks = 0
     while not _stop.wait(2.0):
         ticks += 1
         try:
+            # Fast path: process queued start/stop commands every tick
             stream_manager.process_stream_cmds()
-            if ticks == 1 or ticks % 6 == 0:
+            # Restart any dead preroll buffers right away so the pre-event
+            # window refills instead of waiting for the slow reconcile.
+            preroll.reconcile()
+            # Slow reconcile: every 15 ticks ≈ 30s
+            if ticks % 15 == 0:
                 demo_publisher.ensure_started()
                 stream_manager.ensure_online_cameras()
         except Exception:
             logger.exception("preview ensure loop failed")
+        # Escalate unhandled alerts every ~5 minutes (300s / 2s per tick = 150 ticks)
+        if ticks % 150 == 0:
+            try:
+                from apps.alerts.services import escalate_alerts
+
+                n = escalate_alerts()
+                if n:
+                    logger.info("escalated %s unhandled alerts", n)
+            except Exception:
+                logger.exception("escalate_alerts failed")
 
 
 def stop_runtime() -> None:

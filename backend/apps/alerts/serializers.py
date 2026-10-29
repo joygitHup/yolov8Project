@@ -3,9 +3,9 @@ from rest_framework import serializers
 from .models import Alert, AlertTicket
 from . import services
 
-ALERT_TYPES = {"intrusion", "parking", "fire"}
+ALERT_TYPES = {"intrusion", "parking", "fire", "service"}
 ALERT_LEVELS = {"high", "medium", "low"}
-ALERT_STATUSES = {"unhandled", "processing", "resolved"}
+ALERT_STATUSES = {"unhandled", "processing", "resolved", "review"}
 
 
 class AlertSerializer(serializers.ModelSerializer):

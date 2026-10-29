@@ -19,11 +19,23 @@ from django.conf import settings
 logger = logging.getLogger("streaming.preroll")
 
 _SEGMENT_SEC = 1
-_WRAP = 12
+_WRAP = 12  # default buffer; overridden by settings.streaming.prerollSeconds
 _SAFE = re.compile(r"[^A-Za-z0-9_.-]+")
 _lock = threading.Lock()
 _procs: dict[str, subprocess.Popen] = {}
 _src: dict[str, str] = {}
+_last_restart: dict[str, float] = {}
+
+
+def _wrap_count() -> int:
+    """Read buffer length from settings.streaming.prerollSeconds, default 12."""
+    try:
+        from apps.systemcfg.services import get_section
+
+        secs = int(get_section("streaming").get("prerollSeconds") or _WRAP)
+    except Exception:
+        secs = _WRAP
+    return max(3, min(secs, 60))
 
 
 def _root() -> Path:
@@ -66,7 +78,7 @@ def ensure(mtx_path: str, src_rtsp: str) -> None:
             "-c:v", "copy",
             "-f", "segment",
             "-segment_time", str(_SEGMENT_SEC),
-            "-segment_wrap", str(_WRAP),
+            "-segment_wrap", str(_wrap_count()),
             "-reset_timestamps", "1",
             "-strftime", "0",
             pattern,
@@ -78,6 +90,34 @@ def ensure(mtx_path: str, src_rtsp: str) -> None:
             logger.info("preroll start path=%s pid=%s", path, proc.pid)
         except Exception:
             logger.exception("preroll start failed path=%s", path)
+
+
+def reconcile() -> int:
+    """
+    Runtime sweep: restart buffer processes that died so the pre-event window
+    refills immediately instead of waiting for the next 30s stream reconcile.
+    Throttled per source (10s) so a permanently broken RTSP source doesn't
+    spawn ffmpeg on every tick.
+    """
+    now = time.monotonic()
+    with _lock:
+        items = list(_procs.items())
+        srcs = dict(_src)
+    restarted = 0
+    for path, proc in items:
+        try:
+            if proc.poll() is None:
+                continue
+            if now - _last_restart.get(path, 0.0) < 10.0:
+                continue
+            src = srcs.get(path) or ""
+            logger.warning("preroll died path=%s code=%s, restarting", path, proc.returncode)
+            _last_restart[path] = now
+            ensure(path, src)
+            restarted += 1
+        except Exception:
+            logger.exception("preroll restart failed path=%s", path)
+    return restarted
 
 
 def stop(mtx_path: str) -> None:
@@ -165,7 +205,7 @@ def _ordered_segments(mtx_path: str) -> list[Path]:
     items.sort(key=lambda p: p.stat().st_mtime)
     now = time.time()
     items = [p for p in items if now - p.stat().st_mtime < 30]
-    return items[-_WRAP:]
+    return items[-_wrap_count():]
 
 
 def _kill(proc: subprocess.Popen | None) -> None:

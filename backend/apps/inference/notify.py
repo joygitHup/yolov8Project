@@ -10,7 +10,7 @@ import urllib.parse
 import urllib.request
 from email.mime.text import MIMEText
 
-from apps.common.jobs import QUEUE_NOTIFY, enqueue, register
+from apps.common.jobs import QUEUE_NOTIFY, Requeue, enqueue, register
 from apps.systemcfg.models import NotificationLog
 from apps.systemcfg.services import get_section
 
@@ -155,6 +155,12 @@ def job_notify_alert(payload: dict):
     if notification.get("enabled") is False:
         return
     text = f"【{alert.level}】{alert.camera_name} {alert.description}（置信度 {alert.confidence:.2f}）"
+    failed = []
     for channel in ("dingtalk", "email", "sms", "wework"):
         if _should_send(notification.get(channel), alert):
-            send_channel(channel, text, kind="alert", alert=alert)
+            result = send_channel(channel, text, kind="alert", alert=alert)
+            if not result.get("success"):
+                failed.append(f"{channel}: {result.get('message')}")
+    if failed:
+        # Delivery failed → raise so the queue retries (MAX_ATTEMPTS["notify.alert"] = 3).
+        raise Requeue(delay=3.0, reason="; ".join(failed))

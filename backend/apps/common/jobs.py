@@ -102,8 +102,21 @@ def enqueue(queue: str, task: str, payload: dict | None = None, *, sync: bool | 
         return job["id"]
     from apps.common import mq
 
-    mq.publish(queue, job)
-    return job["id"]
+    last_exc = None
+    for attempt in range(3):
+        try:
+            mq.publish(queue, job)
+            return job["id"]
+        except Exception as exc:
+            last_exc = exc
+            logger.warning(
+                "enqueue publish failed task=%s queue=%s attempt=%s: %s",
+                task, queue, attempt + 1, exc,
+            )
+            if attempt < 2:
+                time.sleep(0.5 * (2 ** attempt))
+    logger.error("enqueue dropped task=%s queue=%s after retries: %s", task, queue, last_exc)
+    raise last_exc
 
 
 def _enqueue_redis(queue: str, job: dict) -> None:
@@ -147,7 +160,7 @@ def _dispatch(job: dict) -> None:
     try:
         run_job(job)
     except Requeue as exc:
-        _handle_failure(job, delay=exc.delay, count_attempt=exc.count_attempt, reason="requeue")
+        _handle_failure(job, delay=exc.delay, count_attempt=exc.count_attempt, reason=exc.reason or "requeue")
     except Exception:
         logger.exception("job failed task=%s id=%s", job.get("task"), job.get("id"))
         _handle_failure(job, delay=1.5, reason="exception")
@@ -191,10 +204,11 @@ def _rabbit_worker_loop(worker_id: int) -> None:
 
 
 class Requeue(Exception):
-    def __init__(self, delay: float = 2.0, *, count_attempt: bool = True):
+    def __init__(self, delay: float = 2.0, *, count_attempt: bool = True, reason: str = ""):
         super().__init__("requeue")
         self.delay = delay
         self.count_attempt = count_attempt
+        self.reason = reason
 
 
 def start_embedded_workers() -> None:

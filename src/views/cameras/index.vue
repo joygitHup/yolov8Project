@@ -94,7 +94,16 @@
         </el-table-column>
         <el-table-column label="流状态" min-width="220">
           <template #default="{ row }">
-            <el-tag :type="row.rtspConfigured ? 'success' : 'info'" size="small" style="margin-right: 4px">
+            <el-tag
+              v-if="!row.rtspConfigured"
+              type="warning"
+              size="small"
+              style="margin-right: 4px; cursor: pointer"
+              @click="handleEdit(row)"
+            >
+              未配置 RTSP
+            </el-tag>
+            <el-tag v-else type="success" size="small" style="margin-right: 4px">
               RTSP
             </el-tag>
             <el-tag :type="row.hlsReady ? 'success' : 'info'" size="small" style="margin-right: 4px">
@@ -306,7 +315,15 @@
           controls
         />
         <div v-if="!previewHlsUrl && !previewLoading" class="preview-empty">
-          {{ previewError || '预览视频未获取到' }}
+          <div>{{ previewError || '预览视频未获取到' }}</div>
+          <el-button
+            v-if="previewNeedsSetup && previewCamera"
+            type="primary"
+            style="margin-top: 12px"
+            @click="gotoConfigure"
+          >
+            去配置 RTSP
+          </el-button>
         </div>
       </div>
       <template #footer>
@@ -398,6 +415,7 @@ const formRules: FormRules = {
 
 const previewVisible = ref(false)
 const previewLoading = ref(false)
+const previewNeedsSetup = ref(false)
 const previewCamera = ref<CameraItem | null>(null)
 const previewHlsUrl = ref('')
 const previewError = ref('')
@@ -521,12 +539,19 @@ function goMonitor(row: CameraItem) {
   router.push({ path: '/monitor', query: { cameraId: String(row.id) } })
 }
 
+function gotoConfigure() {
+  const cam = previewCamera.value
+  previewVisible.value = false
+  if (cam) handleEdit(cam)
+}
+
 async function openPreview(row: CameraItem) {
   previewCamera.value = row
   previewVisible.value = true
   previewLoading.value = true
   previewError.value = ''
   previewHlsUrl.value = ''
+  previewNeedsSetup.value = false
   destroyPreviewPlayer()
 
   if (!row.enabled) {
@@ -536,7 +561,8 @@ async function openPreview(row: CameraItem) {
   }
   if (!row.rtspConfigured && !(row as any).rtsp) {
     previewLoading.value = false
-    previewError.value = '未配置 RTSP 地址'
+    previewNeedsSetup.value = true
+    previewError.value = '未配置 RTSP 地址，请点击「编辑」填写摄像头推流地址（rtsp://…）后保存'
     return
   }
 

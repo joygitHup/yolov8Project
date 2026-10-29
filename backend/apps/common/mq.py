@@ -155,6 +155,7 @@ def consume_loop(on_job, should_stop) -> None:
 
     logicals = (QUEUE_EVIDENCE, QUEUE_NOTIFY, QUEUE_FLYWHEEL)
     queues = [queue_name(q) for q in logicals]
+    backoff = 2.0  # exponential: 2s → 60s while broker is down
     while not should_stop():
         conn = None
         try:
@@ -180,6 +181,7 @@ def consume_loop(on_job, should_stop) -> None:
 
             while not should_stop():
                 conn.process_data_events(time_limit=1.0)
+                backoff = 2.0  # healthy connection — reset backoff
         except pika.exceptions.AMQPError as exc:
             logger.warning("rabbit consume reconnect: %s", exc)
         except Exception as exc:
@@ -192,7 +194,7 @@ def consume_loop(on_job, should_stop) -> None:
                 pass
         if should_stop():
             break
-        if not should_stop():
-            import time
+        import time
 
-            time.sleep(2.0)
+        time.sleep(backoff)
+        backoff = min(backoff * 2, 60.0)

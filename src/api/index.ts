@@ -74,7 +74,9 @@ export const alertApi = {
   getEvidence: (id: number) => get(`/alerts/${id}/evidence`),
   getReport: (id: number) => get(`/alerts/${id}/report`),
   dispatch: (id: number, data?: { note?: string; assignee?: string }) =>
-    post(`/alerts/${id}/dispatch`, data || {})
+    post(`/alerts/${id}/dispatch`, data || {}),
+  closeTicket: (id: number, data?: { note?: string }) =>
+    post(`/alerts/${id}/ticket/close`, data || {})
 }
 
 // ============== 配置接口 ==============
@@ -84,6 +86,21 @@ export const configApi = {
 
   getDetection: () => get('/config/detection'),
   updateDetection: (data: any) => put('/config/detection', data),
+
+  getWhitelist: () => get('/config/whitelist'),
+  updateWhitelist: (data: any) => put('/config/whitelist', data),
+
+  // 人脸特征库（注册/删除转发给 yolo-service 执行）
+  listFaces: () => get('/config/faces'),
+  enrollFace: (name: string, file: File) => {
+    const fd = new FormData()
+    fd.append('name', name)
+    fd.append('image', file)
+    // 覆盖实例默认的 application/json，让浏览器带 boundary
+    return post('/config/faces', fd, { headers: { 'Content-Type': undefined as any }, timeout: 60000 })
+  },
+  deleteFace: (faceId: string) => del(`/config/faces/${encodeURIComponent(faceId)}`),
+  facePhotoUrl: (faceId: string) => `/api/config/faces/${encodeURIComponent(faceId)}/photo`,
 
   getNotification: () => get('/config/notification'),
   updateNotification: (data: any) => put('/config/notification', data),
@@ -118,6 +135,7 @@ export const configApi = {
   getFlywheelTrain: () => get('/config/flywheel/train'),
   startFlywheelTrain: () => post('/config/flywheel/train', {}),
   promoteFlywheelTrain: (id: number) => post(`/config/flywheel/train/${id}/promote`, {}),
+  cancelFlywheelTrain: (id: number) => post(`/config/flywheel/train/${id}/cancel`, {}),
   rollbackFlywheelTrain: (id: number) => post(`/config/flywheel/train/${id}/rollback`, {})
 }
 

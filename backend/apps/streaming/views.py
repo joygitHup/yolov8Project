@@ -1,3 +1,4 @@
+import logging
 import mimetypes
 from pathlib import Path
 
@@ -12,6 +13,8 @@ from apps.common.permissions import IsAdminOrOperator
 from apps.streaming.ffmpeg import camera_hls_dir, find_ffmpeg, hls_url
 from apps.streaming.manager import stream_manager
 from apps.streaming.publisher import DEMO_RTSP_URL, demo_publisher
+
+logger = logging.getLogger("streaming")
 
 
 def _camera_or_404(pk):
@@ -108,15 +111,13 @@ class MtxHlsProxyView(APIView):
     def get(self, request, mtx_path, filename):
         import re
         import http.cookiejar
-        import sys
         import urllib.error
         import urllib.request
 
         from django.http import HttpResponse
         from apps.streaming import mediamtx as mtx
 
-        print(f"[mtx-proxy] ENTER mtx_path={mtx_path!r} filename={filename!r} GET={dict(request.GET)}", flush=True)
-        sys.stdout.flush()
+        logger.debug("mtx-proxy ENTER path=%s name=%s GET=%s", mtx_path, filename, dict(request.GET))
 
         path = str(mtx_path or "").strip("/")
         name = Path(filename).name
@@ -142,9 +143,9 @@ class MtxHlsProxyView(APIView):
             with opener.open(upstream, timeout=8) as resp:
                 data = resp.read()
                 content_type = resp.headers.get("Content-Type") or "application/octet-stream"
-            print(f"[mtx-proxy] path={path} name={name} upstream={upstream} status={resp.status} cookies={[c.name for c in jar]}")
+            logger.debug("mtx-proxy OK path=%s name=%s upstream=%s status=%s", path, name, upstream, resp.status)
         except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, OSError) as e:
-            print(f"[mtx-proxy] FAIL path={path} name={name} upstream={upstream} err={e} cookies={[c.name for c in jar]}")
+            logger.warning("mtx-proxy FAIL path=%s name=%s upstream=%s err=%s", path, name, upstream, e)
             raise Http404() from None
         if name.endswith(".m3u8"):
             content_type = "application/vnd.apple.mpegurl"

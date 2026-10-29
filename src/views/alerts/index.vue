@@ -65,6 +65,7 @@
               <el-option label="区域入侵" value="intrusion" />
               <el-option label="违停占道" value="parking" />
               <el-option label="火灾隐患" value="fire" />
+              <el-option label="服务异常" value="service" />
             </el-select>
           </el-form-item>
           <el-form-item label="告警级别">
@@ -78,6 +79,7 @@
             <el-select v-model="filterForm.status" placeholder="全部" clearable style="width: 120px">
               <el-option label="待处理" value="unhandled" />
               <el-option label="处理中" value="processing" />
+              <el-option label="待确认" value="review" />
               <el-option label="已处理" value="resolved" />
             </el-select>
           </el-form-item>
@@ -110,6 +112,12 @@
               style="width: 320px"
               value-format="YYYY-MM-DD HH:mm:ss"
             />
+          </el-form-item>
+          <el-form-item label="排序">
+            <el-select v-model="sortBy" style="width: 130px" @change="onSortChange">
+              <el-option label="级别优先" value="priority" />
+              <el-option label="时间倒序" value="time" />
+            </el-select>
           </el-form-item>
           <el-form-item>
             <el-button type="primary" @click="loadData">查询</el-button>
@@ -208,6 +216,7 @@
         <el-form-item label="处理状态">
           <el-radio-group v-model="handleForm.status">
             <el-radio value="processing">标记处理中</el-radio>
+            <el-radio value="review">转为待确认</el-radio>
             <el-radio value="resolved">标记已处理</el-radio>
           </el-radio-group>
         </el-form-item>
@@ -290,6 +299,7 @@ const filterForm = reactive({
 })
 
 const dateRange = ref<string[]>([])
+const sortBy = ref<'priority' | 'time'>('priority')
 const pagination = reactive({
   page: 1,
   pageSize: 10,
@@ -311,7 +321,8 @@ function typeText(type: string) {
   const map: Record<string, string> = {
     intrusion: '区域入侵',
     parking: '违停占道',
-    fire: '火灾隐患'
+    fire: '火灾隐患',
+    service: '服务异常'
   }
   return map[type] || type
 }
@@ -320,6 +331,7 @@ function statusText(status: string) {
   const map: Record<string, string> = {
     unhandled: '待处理',
     processing: '处理中',
+    review: '待确认',
     resolved: '已处理'
   }
   return map[status] || status
@@ -329,9 +341,10 @@ function statusTagType(status: string) {
   const map: Record<string, string> = {
     unhandled: 'danger',
     processing: 'warning',
+    review: '',
     resolved: 'success'
   }
-  return map[status] || 'info'
+  return (map[status] || 'info') as any
 }
 
 function formatConfidence(value?: number) {
@@ -409,7 +422,8 @@ async function loadData() {
   try {
     const params: Record<string, any> = {
       page: pagination.page,
-      pageSize: pagination.pageSize
+      pageSize: pagination.pageSize,
+      sortBy: sortBy.value
     }
     if (filterForm.type) params.type = filterForm.type
     if (filterForm.level) params.level = filterForm.level
@@ -433,6 +447,11 @@ async function loadData() {
 
 function refreshAll() {
   loadStats()
+  loadData()
+}
+
+function onSortChange() {
+  pagination.page = 1
   loadData()
 }
 

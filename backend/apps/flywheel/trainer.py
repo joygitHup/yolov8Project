@@ -24,6 +24,8 @@ logger = logging.getLogger("flywheel.train")
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
 
 _lock = threading.Lock()
+_cancel_lock = threading.Lock()
+_cancel_events: dict[int, threading.Event] = {}
 
 
 def run_to_dict(run: FlywheelTrainRun) -> dict:
@@ -109,6 +111,32 @@ def rollback_run(run: FlywheelTrainRun) -> FlywheelTrainRun:
     _activate_weights(prev)
     run.message = f"已回滚到 {prev}"
     run.save(update_fields=["message"])
+    return run
+
+
+def cancel_train(run_id: int) -> FlywheelTrainRun:
+    """
+    Cancel a queued run immediately, or request a graceful stop for a running
+    one. Ultralytics has no mid-epoch pause, so a running job stops after the
+    current epoch and its weights are NOT promoted.
+    """
+    run = FlywheelTrainRun.objects.filter(pk=run_id).first()
+    if not run:
+        raise ValueError("训练记录不存在")
+    if run.status == "queued":
+        run.status = "cancelled"
+        run.message = "已取消（排队中，未开始训练）"
+        run.finished_at = timezone.now()
+        run.save(update_fields=["status", "message", "finished_at"])
+        return run
+    if run.status != "running":
+        raise ValueError("当前训练状态不可取消")
+    with _cancel_lock:
+        event = _cancel_events.get(run_id)
+    if event is None:
+        raise ValueError("训练进程不在当前 runtime 实例，无法取消")
+    event.set()
+    _append(run, "收到取消请求，将在当前 epoch 结束后停止（不上线新权重）")
     return run
 
 
@@ -256,7 +284,15 @@ def _train_thread(run_id: int) -> None:
     if not run:
         _lock.release()
         return
+    cancel_event = threading.Event()
+    with _cancel_lock:
+        _cancel_events[run_id] = cancel_event
     try:
+        if run.status == "cancelled":
+            run.message = "已取消（排队中）"
+            run.finished_at = timezone.now()
+            run.save(update_fields=["message", "finished_at"])
+            return
         cfg = get_section("flywheel")
         if run.status in ("queued", "running"):
             run.status = "running"
@@ -281,6 +317,20 @@ def _train_thread(run_id: int) -> None:
         name = f"flywheel_{run.id}"
         _append(run, f"开始微调 epochs={epochs} batch={batch} device={device}")
         model = YOLO(run.base_weights)
+
+        if cancel_event.is_set():
+            run.status = "cancelled"
+            run.message = "已取消（数据集准备完成后、训练开始前）"
+            run.finished_at = timezone.now()
+            run.save()
+            return
+
+        def _stop_if_cancelled(tr) -> None:
+            if cancel_event.is_set():
+                tr.stop_training = True
+                _append(run, "检测到取消请求，提前结束训练")
+
+        model.add_callback("on_train_epoch_end", _stop_if_cancelled)
         results = model.train(
             data=str(yaml_path),
             epochs=epochs,
@@ -297,6 +347,15 @@ def _train_thread(run_id: int) -> None:
             pretrained=True,
         )
         save_dir = Path(str(getattr(results, "save_dir", project / name)))
+
+        if cancel_event.is_set():
+            run.status = "cancelled"
+            run.message = f"已取消（训练未跑完，未上线新权重）输出 {save_dir}"
+            run.finished_at = timezone.now()
+            run.save()
+            logger.info("train #%s cancelled by user", run.id)
+            return
+
         best = save_dir / "weights" / "best.pt"
         if not best.is_file():
             last = save_dir / "weights" / "last.pt"
@@ -342,6 +401,8 @@ def _train_thread(run_id: int) -> None:
         run.log = ((run.log or "") + f"ERROR {exc}\n")[-12000:]
         run.save()
     finally:
+        with _cancel_lock:
+            _cancel_events.pop(run_id, None)
         try:
             _lock.release()
         except Exception:

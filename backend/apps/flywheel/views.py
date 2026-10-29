@@ -227,6 +227,22 @@ class FlywheelTrainView(APIView):
         return Response({"message": "训练已开始", "run": run_to_dict(run)})
 
 
+class FlywheelTrainCancelView(APIView):
+    permission_classes = [IsAuthenticated, IsAdminOrOperator]
+
+    def post(self, request, pk):
+        from apps.flywheel.models import FlywheelTrainRun
+        from apps.flywheel.trainer import cancel_train, run_to_dict
+
+        if not FlywheelTrainRun.objects.filter(pk=pk).exists():
+            raise NotFound("训练记录不存在")
+        try:
+            run = cancel_train(pk)
+        except ValueError as exc:
+            raise ValidationError(str(exc)) from exc
+        return Response({"message": run.message, "run": run_to_dict(run)})
+
+
 class FlywheelTrainPromoteView(APIView):
     permission_classes = [IsAuthenticated, IsAdminOrOperator]
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 import logging
 import os
 import threading
+import time
 from typing import Any
 
 logger = logging.getLogger("yolo.engine")
@@ -12,6 +13,19 @@ _lock = threading.Lock()
 _model = None
 _model_path: str | None = None
 _load_error: str | None = None
+_track_warn_last = 0.0
+
+
+def _warn_track_failure(exc: Exception) -> None:
+    """Log track failures at most once per 30s — a persistently failing stream
+    would otherwise spam one warning per frame."""
+    global _track_warn_last
+    now = time.time()
+    if now - _track_warn_last >= 30.0:
+        _track_warn_last = now
+        logger.warning("YOLO track failed, falling back to predict: %s", exc)
+    else:
+        logger.debug("YOLO track failed (throttled): %s", exc)
 
 _DEFAULT_WEIGHTS = os.environ.get(
     "YOLO_WEIGHTS",
@@ -84,16 +98,40 @@ def predict(
         return []
 
     device = resolve_device()
+    track_enabled = os.environ.get("YOLO_TRACK_ENABLED", "1").strip() not in ("0", "false", "off", "no")
+
     try:
         with _lock:
-            results = _model.predict(
-                source=frame_bgr,
-                conf=float(conf),
-                iou=float(iou),
-                max_det=int(max_det),
-                device=device,
-                verbose=False,
-            )
+            if track_enabled:
+                try:
+                    results = _model.track(
+                        source=frame_bgr,
+                        conf=float(conf),
+                        iou=float(iou),
+                        max_det=int(max_det),
+                        device=device,
+                        persist=True,
+                        verbose=False,
+                    )
+                except Exception as exc:
+                    _warn_track_failure(exc)
+                    results = _model.predict(
+                        source=frame_bgr,
+                        conf=float(conf),
+                        iou=float(iou),
+                        max_det=int(max_det),
+                        device=device,
+                        verbose=False,
+                    )
+            else:
+                results = _model.predict(
+                    source=frame_bgr,
+                    conf=float(conf),
+                    iou=float(iou),
+                    max_det=int(max_det),
+                    device=device,
+                    verbose=False,
+                )
     except Exception as exc:
         logger.exception("YOLO predict failed: %s", exc)
         return []
@@ -111,20 +149,40 @@ def predict(
     xyxy = boxes.xyxy.cpu().numpy()
     confs = boxes.conf.cpu().numpy()
     clss = boxes.cls.cpu().numpy().astype(int)
+    try:
+        track_ids = boxes.id.cpu().numpy().astype(int) if boxes.id is not None else None
+    except Exception:
+        track_ids = None
+
     for i, (box, score, cls_id) in enumerate(zip(xyxy, confs, clss)):
         x1, y1, x2, y2 = [float(v) for v in box]
         bw = max(0.0, x2 - x1)
         bh = max(0.0, y2 - y1)
         label = names.get(int(cls_id), str(cls_id))
-        out.append({
+        track_id = int(track_ids[i]) if track_ids is not None and i < len(track_ids) else 0
+        det = {
             "id": i + 1,
             "label": str(label),
             "confidence": round(float(score), 4),
+            "trackId": str(track_id) if track_id else "",
             "bbox": {
                 "x": round(x1 / w, 4),
                 "y": round(y1 / h, 4),
                 "w": round(bw / w, 4),
                 "h": round(bh / h, 4),
             },
-        })
+        }
+        out.append(det)
+
+    # Face analysis — attaches faceId / faceClear to person boxes in-place.
+    try:
+        from app import face as face_mod
+
+        face_mod.attach(frame_bgr, out)
+    except Exception as exc:
+        logger.debug("face attach skipped: %s", exc)
+        for det in out:
+            det.setdefault("faceClear", None)
+            det.setdefault("faceId", "")
+
     return out[: max(1, int(max_det))]

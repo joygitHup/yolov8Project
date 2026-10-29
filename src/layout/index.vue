@@ -181,7 +181,9 @@ onMounted(() => {
   connectRealtime()
   realtimeOffs.push(
     onRealtime('alert:created', (alert) => {
-      unhandledCount.value += 1
+      // Always re-query: alerts can also be auto-resolved/escalated by runtime,
+      // so a blind +1 drifts from the real unhandled total.
+      fetchUnhandledCount()
       ElNotification({
         title: alert?.level === 'high' ? '高危告警' : '新告警',
         message: `${alert?.cameraName || ''} ${alert?.description || ''}`,

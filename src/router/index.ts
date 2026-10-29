@@ -76,6 +76,12 @@ const routes: RouteRecordRaw[] = [
         meta: { title: '布防策略', icon: 'Lock', requiresAuth: true, roles: ['admin', 'operator'], hidden: true }
       },
       {
+        path: 'config/whitelist',
+        name: 'WhitelistConfig',
+        component: () => import('@/views/config/whitelist.vue'),
+        meta: { title: '白名单', icon: 'UserFilled', requiresAuth: true, roles: ['admin', 'operator'], hidden: true }
+      },
+      {
         path: 'config/notification',
         name: 'NotificationConfig',
         component: () => import('@/views/config/notification.vue'),

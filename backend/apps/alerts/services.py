@@ -4,11 +4,11 @@ from datetime import datetime, time, timedelta
 from django.utils import timezone
 from django.utils.dateparse import parse_date, parse_datetime
 
-from .models import AlertAction, AlertTicket
+from .models import Alert, AlertAction, AlertTicket
 
 _TYPE_TEXT = {"intrusion": "区域入侵", "parking": "违停占道", "fire": "火灾隐患"}
 _LEVEL_TEXT = {"high": "高危", "medium": "中危", "low": "低危"}
-_STATUS_TEXT = {"unhandled": "待处理", "processing": "处理中", "resolved": "已处理"}
+_STATUS_TEXT = {"unhandled": "待处理", "processing": "处理中", "resolved": "已处理", "review": "待确认"}
 _LABEL_TEXT = {
     "person": "人", "car": "轿车", "truck": "卡车", "bus": "公交车",
     "fire": "火焰", "smoke": "烟雾", "bicycle": "自行车", "motorcycle": "摩托车",
@@ -227,3 +227,75 @@ def create_or_get_ticket(alert, operator, note="", assignee=""):
     )
     log_action(alert, operator, "dispatch", alert.status, alert.status, note or "已派发工单")
     return ticket, True
+
+
+def close_ticket_for_alert(alert, operator="system", note=""):
+    """Auto-close ticket when alert is resolved."""
+    from django.utils import timezone
+
+    ticket = AlertTicket.objects.filter(alert=alert, status="open").first()
+    if not ticket:
+        return None
+    ticket.status = "done"
+    ticket.note = (ticket.note + "\n" + (note or "告警已处理，工单自动关闭")).strip()
+    ticket.updated_at = timezone.now()
+    ticket.save(update_fields=["status", "note", "updated_at"])
+    log_action(alert, operator, "ticket_close", alert.status, alert.status, note or "工单已自动关闭")
+    return ticket
+
+
+def escalate_alerts():
+    """
+    Runtime task: scan unhandled alerts and bump their level if they've been
+    sitting too long. Log an AlertAction and re-dispatch notification when
+    the level changes. Returns number of alerts escalated.
+    """
+    from django.utils import timezone
+
+    from apps.systemcfg.services import get_section
+
+    cfg = get_section("alertEscalation") or {}
+    if not cfg.get("enabled", True):
+        return 0
+
+    now = timezone.now()
+    low_to_medium = int(cfg.get("lowToMediumMin") or 30)
+    medium_to_high = int(cfg.get("mediumToHighMin") or 60)
+    notify = bool(cfg.get("notifyOnEscalate", True))
+    bumped = 0
+
+    # low → medium
+    low_qs = Alert.objects.filter(
+        level="low", status="unhandled",
+        triggered_at__lte=now - timedelta(minutes=low_to_medium),
+    )
+    for alert in low_qs:
+        alert.level = "medium"
+        alert.save(update_fields=["level", "updated_at"])
+        log_action(alert, "system", "escalate", "low", "medium", f"超时 {low_to_medium} 分钟")
+        bumped += 1
+        if notify:
+            try:
+                from apps.inference.notify import dispatch
+                dispatch(alert)
+            except Exception:
+                pass
+
+    # medium → high
+    medium_qs = Alert.objects.filter(
+        level="medium", status="unhandled",
+        triggered_at__lte=now - timedelta(minutes=medium_to_high),
+    )
+    for alert in medium_qs:
+        alert.level = "high"
+        alert.save(update_fields=["level", "updated_at"])
+        log_action(alert, "system", "escalate", "medium", "high", f"超时 {medium_to_high} 分钟")
+        bumped += 1
+        if notify:
+            try:
+                from apps.inference.notify import dispatch
+                dispatch(alert)
+            except Exception:
+                pass
+
+    return bumped
